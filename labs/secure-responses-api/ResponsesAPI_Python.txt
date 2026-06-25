@@ -1,0 +1,33 @@
+from openai import AzureOpenAI,AsyncAzureOpenAI,OpenAI
+from azure.identity import  AzureCliCredential,get_bearer_token_provider, DefaultAzureCredential
+
+token_provider = get_bearer_token_provider(
+    DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
+)
+
+base_url="https://llm-multitenancy-dev.jpmchase.net/"
+apim_subscription_key = "abcd"
+model_deployment="gpt-4o-2024-08-06"
+
+
+os.environ["http_proxy"] = "proxy.jpmchase.net:10443"
+os.environ["https_proxy"] = "proxy.jpmchase.net:10443"
+if 'no_proxy' in os.environ:
+    os.environ["no_proxy"] = os.environ["no_proxy"] + ",jpmchase.net" + ",openai.azure.com"
+else:
+    os.environ["no_proxy"] = 'localhost,127.0.0.1,jpmchase.net,openai.azure.com'
+    
+responsesLLM = OpenAI(
+    base_url=base_url + "openai/v1/",
+    api_key=apim_subscription_key,
+    default_headers=
+        {
+            "Authorization": f"Bearer {token_provider}",
+            "user_sid":"V806260"
+        }
+)
+
+response = responsesLLM.responses.create(
+    model=model_deployment, 
+    input= "What is the capital of France?" 
+)

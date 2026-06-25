@@ -1,0 +1,65 @@
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+
+client = Client("http://localhost:8000/sse")
+
+
+#from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from openai import AzureOpenAI,AsyncAzureOpenAI,OpenAI
+from azure.identity import  AzureCliCredential,get_bearer_token_provider, DefaultAzureCredential
+import os
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import json
+
+
+credential = AzureCliCredential()
+token = credential.get_token("https://cognitiveservices.azure.com/.default")
+
+
+#base_url =  "https://llm-test-openai.jpmchase.net/acse001-exp-use2/" 
+base_url="https://llm-multitenancy-dev.jpmchase.net/"
+apim_subscription_key = "31f112c8c17042ee992695c8a46d20a7"
+model_deployment="gpt-4o-2024-08-06"
+
+
+
+os.environ["http_proxy"] = "proxy.jpmchase.net:10443"
+os.environ["https_proxy"] = "proxy.jpmchase.net:10443"
+if 'no_proxy' in os.environ:
+    os.environ["no_proxy"] = os.environ["no_proxy"] + ",jpmchase.net" + ",openai.azure.com"
+else:
+    os.environ["no_proxy"] = 'localhost,127.0.0.1,jpmchase.net,openai.azure.com'
+    
+responsesLLM = OpenAI(
+    base_url=base_url + "openai/v1",
+    api_key=token.token,
+    default_headers=
+        {
+            #"Authorization": f"Bearer {token_provider}",
+            "api-key": apim_subscription_key,
+            "user_sid":"V806260"
+        }
+)
+
+tools=[
+        {
+            "type": "mcp",
+            "server_label": "DemoServer",
+            "server_url": "http://localhost:8000/sse",
+            "require_approval": {
+                "never": {
+                    "tool_names": ["add", "greet"]
+                }
+            }
+        },
+    ]
+response = responsesLLM.responses.create(
+    model=model_deployment,
+    tools=tools,
+    input="Can you add 2 number 1 + 2?",
+)

@@ -1,0 +1,70 @@
+<policies>
+    <inbound>
+        <base />
+        <set-variable name="web-iq-auth-mode" value="@(context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;).StartsWith(&quot;Bearer &quot;, System.StringComparison.OrdinalIgnoreCase) ? &quot;Entra ID&quot; : &quot;API key&quot;)" />
+        <emit-metric name="Web IQ Requests" value="1" namespace="web-iq">
+            <dimension name="Subscription ID" />
+            <dimension name="Operation ID" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+        </emit-metric>
+        <choose>
+            <when condition="@(context.Operation.Id == &quot;browse-url&quot;)">
+                <emit-metric name="Web IQ Blocked Requests" value="1" namespace="web-iq">
+                    <dimension name="Subscription ID" />
+                    <dimension name="Operation ID" />
+                    <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+                </emit-metric>
+                <return-response>
+                    <set-status code="403" reason="Forbidden" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="x-apim-request-id" exists-action="override">
+                        <value>@(context.RequestId.ToString())</value>
+                    </set-header>
+                    <set-body>{"errorCode":"BrowseOperationBlocked","errorCategory":"UserError","userMessage":"The Browse operation is disabled by the API Management policy."}</set-body>
+                </return-response>
+            </when>
+        </choose>
+        <choose>
+            <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Entra ID&quot;)">
+                <set-header name="x-apikey" exists-action="delete" />
+            </when>
+            <otherwise>
+                <set-header name="Authorization" exists-action="delete" />
+                <set-header name="x-apikey" exists-action="override">
+                    <value>{{web-iq-api-key}}</value>
+                </set-header>
+            </otherwise>
+        </choose>
+        <set-backend-service backend-id="web-iq-backend" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <emit-metric name="Web IQ Responses" value="1" namespace="web-iq">
+            <dimension name="Subscription ID" />
+            <dimension name="Operation ID" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+            <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
+        </emit-metric>
+        <emit-metric name="Web IQ Latency" value="@(context.Elapsed.TotalMilliseconds)" namespace="web-iq">
+            <dimension name="Subscription ID" />
+            <dimension name="Operation ID" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+            <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
+        </emit-metric>
+        <set-header name="x-apim-request-id" exists-action="override">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+        <emit-metric name="Web IQ Gateway Errors" value="1" namespace="web-iq">
+            <dimension name="Subscription ID" />
+            <dimension name="Operation ID" />
+        </emit-metric>
+    </on-error>
+</policies>

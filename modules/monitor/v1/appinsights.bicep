@@ -44,6 +44,8 @@ param workbookJson string = ''
 @description('Log Analytics Workspace Id')
 param lawId string
 
+param azureMonitorWorkspaceIngestionMode string = ''
+
 // ------------------
 //    VARIABLES
 // ------------------
@@ -62,6 +64,10 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
     // BCP037: Not yet added to latest API: https://github.com/Azure/bicep-types-az/issues/2048
     #disable-next-line BCP037
     CustomMetricsOptedInType: customMetricsOptedInType
+    ...(azureMonitorWorkspaceIngestionMode == 'Enabled' ? {
+      #disable-next-line BCP037
+      AzureMonitorWorkspaceIngestionMode: azureMonitorWorkspaceIngestionMode
+    } : {})
   }
 }
 
@@ -84,5 +90,6 @@ resource workbook 'Microsoft.Insights/workbooks@2022-04-01' = if (useWorkbook) {
 output id string = applicationInsights.id
 output name string = applicationInsights.name
 output instrumentationKey string = applicationInsights.properties.InstrumentationKey
+output connectionString string = applicationInsights.properties.ConnectionString
 output appId string = applicationInsights.properties.AppId
 output applicationInsightsName string = applicationInsightsName

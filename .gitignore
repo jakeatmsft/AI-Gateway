@@ -207,4 +207,3 @@ labs/ai-foundry-sdk/params.json
 # Ignore local environment files
 .env
 .env.local
-labs/secure-responses-api/AIFoundry-resource.json

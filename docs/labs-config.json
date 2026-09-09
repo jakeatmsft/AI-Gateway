@@ -86,6 +86,28 @@
     "lastCommitDate": "2026-03-02T11:38:30.603Z"
   },
   {
+    "id": "ai-foundry-hosted-agents-custom-framework",
+    "name": "AI Foundry Hosted Agents (Custom Frameworks)",
+    "architectureDiagram": "images/ai-foundry-hosted-agents.gif",
+    "categories": [
+      "AI Agents"
+    ],
+    "services": [
+      "Microsoft Foundry",
+      "Hosted Agents",
+      "Azure API Management",
+      "Container Registry"
+    ],
+    "shortDescription": "Deploy AI Foundry Hosted Agents built with custom frameworks, including Pydantic AI and Strands.",
+    "detailedDescription": "This lab provides custom framework examples for AI Foundry Hosted Agents, showing how to package and deploy hosted agents built with Pydantic AI and Strands. It includes a Bicep deployment for Azure API Management, Azure AI Foundry resources, and a GPT-5-Mini model deployment, plus a single end-to-end notebook and Dockerfiles.",
+    "authors": [
+      "georgeollis"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/ai-foundry-hosted-agents-custom-framework",
+    "lastCommitDate": "2026-07-10T17:20:32.613Z"
+  },
+  {
     "id": "ai-foundry-model-gateway",
     "name": "AI Foundry Model Gateway",
     "architectureDiagram": "images/foundry-model-gateway.gif",
@@ -157,6 +179,71 @@
     "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/ai-foundry-sdk",
     "tags": [],
     "lastCommitDate": "2026-06-23T13:28:02.174Z"
+  },
+  {
+    "id": "ai-foundry-toolbox",
+    "name": "AI Foundry Toolbox",
+    "architectureDiagram": "images/ai-foundry-toolbox.gif",
+    "categories": [
+      "AI Agents & MCP",
+      "Knowledge & Tools"
+    ],
+    "services": [
+      "Azure AI Foundry",
+      "Azure API Management"
+    ],
+    "shortDescription": "Secure and govern a Foundry Toolbox MCP endpoint with Azure API Management.",
+    "detailedDescription": "A Foundry Toolbox bundles tools (MCP servers, Web Search, Azure AI Search, and more) into a single MCP-compatible endpoint. This lab shows how to place Azure API Management in front of that endpoint. APIM accepts subscription key auth from agents and transparently injects a managed-identity Entra token when forwarding requests to the Toolbox, so consumers never handle Foundry credentials directly. APIM also adds rate limiting, per-subscription monitoring, and policy-based governance over every tool call.",
+    "authors": [
+      "georgeollis"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/ai-foundry-toolbox",
+    "lastCommitDate": "2026-07-24T10:50:22.024Z"
+  },
+  {
+    "id": "aigw-foundry-models",
+    "name": "AI Gateway Foundry Models",
+    "architectureDiagram": "images/aigw-foundry-models.gif",
+    "categories": [
+      "Platform Capabilities"
+    ],
+    "services": [
+      "API Management",
+      "AI Foundry",
+      "Application Insights",
+      "Azure Monitor"
+    ],
+    "shortDescription": "Publish and govern Microsoft Foundry models through the AI Gateway tier of Azure API Management (public preview).",
+    "detailedDescription": "Playground for the AI Gateway tier of Azure API Management (public preview). Publish Microsoft Foundry models behind a single, stable gateway endpoint and govern them with policy cards — token rate limits, quotas, content safety and model fallback — instead of XML. Call the models via the OpenAI Chat Completions and Responses formats, stream responses, exercise the token rate-limit (leaky bucket) policy, validate authentication, and analyze OpenTelemetry token-usage metrics emitted to Application Insights / managed Prometheus.",
+    "authors": [
+      "vieiraae"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/aigw-foundry-models",
+    "lastCommitDate": "2026-07-29T14:13:17.339Z"
+  },
+  {
+    "id": "apim-purview-dlp",
+    "name": "Microsoft Purview DLP at the AI Gateway",
+    "architectureDiagram": "images/apim-purview-dlp.png",
+    "categories": [
+      "Governance & Responsible AI"
+    ],
+    "services": [
+      "Microsoft Purview",
+      "Azure API Management",
+      "Microsoft Foundry",
+      "Amazon Bedrock"
+    ],
+    "shortDescription": "Enforce Microsoft Purview DLP at the AI gateway for both a Microsoft Foundry backend and an Amazon Bedrock backend.",
+    "detailedDescription": "This lab puts Azure API Management in front of two AI backends — one on Microsoft Foundry (gpt-4.1) and one on Amazon Bedrock (Nova 2 Lite via bedrock-runtime.InvokeModel) — and calls Microsoft Purview processContent from inside the APIM policy on both legs via a shared policy fragment. The prompt is evaluated by Purview upstream of the model (Gate 1) and the response is evaluated downstream (Gate 3). A single Log Analytics KQL query rolls up model PAYG spend and Purview PAYG spend per user, per model, per backend across both clouds. On-behalf-of the signed-in user, the gateway performs a Microsoft Graph OBO exchange once per turn and reuses the cached Graph token for both Purview gates. The backends never see the user token.",
+    "authors": [
+      "inwafula"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/apim-purview-dlp",
+    "lastCommitDate": "2026-08-07T10:31:30.874Z"
   },
   {
     "id": "aws-bedrock",
@@ -456,6 +543,32 @@
     "lastCommitDate": "2026-06-23T13:28:02.179Z"
   },
   {
+    "id": "ghcp-byok-foundry",
+    "name": "GitHub Copilot BYOK → Foundry (MI swap)",
+    "architectureDiagram": "images/ghcp-byok-foundry.gif",
+    "categories": [
+      "Governance & Responsible AI",
+      "Platform Capabilities"
+    ],
+    "services": [
+      "Azure AI Foundry",
+      "Entra ID",
+      "Managed Identity",
+      "Microsoft Graph",
+      "Azure Monitor",
+      "Application Insights"
+    ],
+    "shortDescription": "Govern GitHub Copilot's BYOK access to a private Foundry model through APIM using an identity swap.",
+    "detailedDescription": "Let developers use your own Azure AI Foundry model inside GitHub Copilot - using APIKeys or keyless with Entra-only - while a central Azure API Management gateway enforces per-user authorization, token limits, usage metering and no-bypass. Identity, not the network, makes the gateway non-bypassable.",
+    "authors": [
+      "angangwa",
+      "nourshaker-msft"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/ghcp-byok-foundry",
+    "lastCommitDate": "2026-07-06T10:25:14.677Z"
+  },
+  {
     "id": "google-gemini-api",
     "name": "Google Gemini API",
     "architectureDiagram": "images/gemini-models.gif",
@@ -577,7 +690,7 @@
     ],
     "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/mcp-prm-oauth",
     "tags": [],
-    "lastCommitDate": "2026-06-23T13:28:02.184Z"
+    "lastCommitDate": "2026-08-06T09:18:53.054Z"
   },
   {
     "id": "mcp-registry-apic",
@@ -684,7 +797,7 @@
     ],
     "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/model-routing",
     "tags": [],
-    "lastCommitDate": "2026-06-23T13:28:02.185Z"
+    "lastCommitDate": "2026-07-06T10:25:14.678Z"
   },
   {
     "id": "openai-agents",
@@ -958,6 +1071,31 @@
     "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/vector-searching",
     "tags": [],
     "lastCommitDate": "2026-02-04T13:09:52.740Z"
+  },
+  {
+    "id": "web-iq",
+    "name": "Microsoft Web IQ Usage Tracking",
+    "architectureDiagram": "",
+    "categories": [
+      "Knowledge & Tools",
+      "Platform Capabilities"
+    ],
+    "services": [
+      "Microsoft Web IQ",
+      "Azure API Management",
+      "Application Insights",
+      "Log Analytics"
+    ],
+    "shortDescription": "Track Microsoft Web IQ API consumption and block Browse at the APIM gateway.",
+    "detailedDescription": "Route Microsoft Web IQ Web Search requests through Azure API Management with API key or optional Microsoft Entra ID authentication, and block the published Browse operation before it reaches Web IQ. Emit privacy-conscious custom metrics to Application Insights so operators can attribute request volume, blocked calls, authentication mode, response status, gateway errors, and latency to individual APIM subscriptions and operations.",
+    "authors": [],
+    "tags": [
+      "Web grounding",
+      "Usage tracking",
+      "Custom metrics"
+    ],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/web-iq",
+    "lastCommitDate": "2026-09-09T15:53:50.281Z"
   },
   {
     "id": "zero-to-production",

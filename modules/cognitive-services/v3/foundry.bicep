@@ -19,7 +19,7 @@ param modelsConfig array = []
 param lawId string = ''
 
 @description('APIM Pricipal Id')
-param  apimPrincipalId string
+param  apimPrincipalId string = ''
 
 @description('AI Foundry project name')
 param  foundryProjectName string = 'default'
@@ -27,6 +27,10 @@ param  foundryProjectName string = 'default'
 @description('The instrumentation key for Application Insights')
 @secure()
 param appInsightsInstrumentationKey string = ''
+
+@description('The connection string for Application Insights. When provided, it is used as the App Insights connection credential so runtimes (for example, Foundry Hosted Agents) can configure Azure Monitor correctly.')
+@secure()
+param appInsightsConnectionString string = ''
 
 @description('The resource ID for Application Insights')
 param appInsightsId string = ''
@@ -109,6 +113,9 @@ resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-pr
 resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/connections@2025-06-01' = [for (config, i) in aiServicesConfig: if (length(appInsightsId) > 0 && length(appInsightsInstrumentationKey) > 0) {
   parent: cognitiveServices[i]
   name: '${cognitiveServices[i].name}-appInsights-connection'
+  dependsOn: [
+    aiProject[i]
+  ]
   properties: {
     authType: 'ApiKey'
     category: 'AppInsights'
@@ -123,12 +130,12 @@ resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/connections
       ResourceId: appInsightsId
     }
     credentials: {
-      key: appInsightsInstrumentationKey
+      key: empty(appInsightsConnectionString) ? appInsightsInstrumentationKey : appInsightsConnectionString
     }    
   }
 }]
 
-resource roleAssignmentCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (config, i) in aiServicesConfig: {
+resource roleAssignmentCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (config, i) in aiServicesConfig: if (length(apimPrincipalId) > 0) {
   scope: cognitiveServices[i]
   name: guid(subscription().id, resourceGroup().id, config.name, cognitiveServicesUserRoleDefinitionID)
     properties: {
@@ -144,6 +151,10 @@ module modelDeployments 'deployments.bicep' = [for (config, i) in aiServicesConf
     cognitiveServiceName: cognitiveServices[i].name
     modelsConfig: modelsConfig
   }
+  dependsOn: [
+    aiProject[i]
+    appInsightsConnection[i]
+  ]
 }]
 
 
@@ -161,6 +172,8 @@ output extendedAIServicesConfig array = [for (config, i) in aiServicesConfig: {
   cognitiveService: cognitiveServices[i]
   cognitiveServiceName: cognitiveServices[i].name
   cognitiveServicesId: cognitiveServices[i].id
+  principalId: cognitiveServices[i].identity.principalId
   endpoint: cognitiveServices[i].properties.endpoint
   foundryProjectEndpoint: 'https://${cognitiveServices[i].name}.services.ai.azure.com/api/projects/${aiProject[i].name}'
+  modelDeployments: modelDeployments[i].outputs.modelDeployments
 }]

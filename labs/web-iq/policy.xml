@@ -1,18 +1,56 @@
 <policies>
     <inbound>
         <base />
-        <set-variable name="web-iq-auth-mode" value="@(context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;).StartsWith(&quot;Bearer &quot;, System.StringComparison.OrdinalIgnoreCase) ? &quot;Entra ID&quot; : &quot;API key&quot;)" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+        <set-query-parameter name="subscription-key" exists-action="delete" />
+        <set-variable name="web-iq-auth-mode" value="@{
+            if (context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;).StartsWith(&quot;Bearer &quot;, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return &quot;Entra ID&quot;;
+            }
+
+            return string.IsNullOrWhiteSpace(context.Request.Headers.GetValueOrDefault(&quot;x-apikey&quot;, &quot;&quot;)) ? &quot;Missing&quot; : &quot;API key&quot;;
+        }" />
+        <set-variable name="web-iq-mcp-tool" value="@{
+            if (!string.Equals(context.Operation.Id, &quot;mcp-post&quot;, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return &quot;N/A&quot;;
+            }
+
+            try
+            {
+                var requestBody = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                if (!string.Equals((string)requestBody[&quot;method&quot;], &quot;tools/call&quot;, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return &quot;protocol&quot;;
+                }
+
+                var toolName = ((string)requestBody.SelectToken(&quot;params.name&quot;) ?? &quot;unknown&quot;).ToLowerInvariant();
+                if (toolName == &quot;web&quot; || toolName == &quot;videos&quot; || toolName == &quot;browse&quot; || toolName == &quot;news&quot; || toolName == &quot;images&quot;)
+                {
+                    return toolName;
+                }
+
+                return &quot;unknown&quot;;
+            }
+            catch
+            {
+                return &quot;protocol&quot;;
+            }
+        }" />
         <emit-metric name="Web IQ Requests" value="1" namespace="web-iq">
             <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
             <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+            <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
         </emit-metric>
         <choose>
-            <when condition="@(context.Operation.Id == &quot;browse-url&quot;)">
+            <when condition="@(context.Operation.Id == &quot;browse-url&quot; || (string)context.Variables[&quot;web-iq-mcp-tool&quot;] == &quot;browse&quot;)">
                 <emit-metric name="Web IQ Blocked Requests" value="1" namespace="web-iq">
                     <dimension name="Subscription ID" />
                     <dimension name="Operation ID" />
                     <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+                    <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
                 </emit-metric>
                 <return-response>
                     <set-status code="403" reason="Forbidden" />
@@ -22,7 +60,7 @@
                     <set-header name="x-apim-request-id" exists-action="override">
                         <value>@(context.RequestId.ToString())</value>
                     </set-header>
-                    <set-body>{"errorCode":"BrowseOperationBlocked","errorCategory":"UserError","userMessage":"The Browse operation is disabled by the API Management policy."}</set-body>
+                    <set-body>{"errorCode":"BrowseOperationBlocked","errorCategory":"UserError","userMessage":"The Browse operation and MCP tool are disabled by the API Management policy."}</set-body>
                 </return-response>
             </when>
         </choose>
@@ -30,17 +68,26 @@
             <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Entra ID&quot;)">
                 <set-header name="x-apikey" exists-action="delete" />
             </when>
+            <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Missing&quot;)">
+                <return-response>
+                    <set-status code="401" reason="Unauthorized" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="x-apim-request-id" exists-action="override">
+                        <value>@(context.RequestId.ToString())</value>
+                    </set-header>
+                    <set-body>{"errorCode":"WebIqAuthenticationRequired","errorCategory":"UserError","userMessage":"Provide a Web IQ x-apikey header or Entra ID bearer token."}</set-body>
+                </return-response>
+            </when>
             <otherwise>
                 <set-header name="Authorization" exists-action="delete" />
-                <set-header name="x-apikey" exists-action="override">
-                    <value>{{web-iq-api-key}}</value>
-                </set-header>
             </otherwise>
         </choose>
         <set-backend-service backend-id="web-iq-backend" />
     </inbound>
     <backend>
-        <base />
+        <forward-request buffer-response="false" />
     </backend>
     <outbound>
         <base />
@@ -48,12 +95,14 @@
             <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
             <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+            <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
             <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
         </emit-metric>
         <emit-metric name="Web IQ Latency" value="@(context.Elapsed.TotalMilliseconds)" namespace="web-iq">
             <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
             <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
+            <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
             <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
         </emit-metric>
         <set-header name="x-apim-request-id" exists-action="override">
@@ -65,6 +114,7 @@
         <emit-metric name="Web IQ Gateway Errors" value="1" namespace="web-iq">
             <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
+            <dimension name="MCP Tool" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;web-iq-mcp-tool&quot;, &quot;N/A&quot;))" />
         </emit-metric>
     </on-error>
 </policies>

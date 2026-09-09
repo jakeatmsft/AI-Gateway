@@ -14,10 +14,6 @@ param webIqApiPath string = 'web-iq'
 @description('Microsoft Web IQ v3 service URL.')
 param webIqServiceUrl string = 'https://api.microsoft.ai/v3'
 
-@secure()
-@description('Microsoft Web IQ API key. Stored as a secret named value in API Management.')
-param webIqApiKey string
-
 // ------------------
 //    VARIABLES
 // ------------------
@@ -70,21 +66,7 @@ resource apimService 'Microsoft.ApiManagement/service@2024-06-01-preview' existi
   ]
 }
 
-// 4. Keep the upstream Web IQ credential in APIM, not in client code or policies
-resource webIqApiKeyNamedValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
-  name: 'web-iq-api-key'
-  parent: apimService
-  properties: {
-    displayName: 'web-iq-api-key'
-    secret: true
-    value: webIqApiKey
-    tags: [
-      'web-iq'
-    ]
-  }
-}
-
-// 5. Configure Web IQ as an APIM backend
+// 4. Configure Web IQ as an APIM backend
 resource webIqBackend 'Microsoft.ApiManagement/service/backends@2024-06-01-preview' = {
   name: 'web-iq-backend'
   parent: apimService
@@ -95,7 +77,7 @@ resource webIqBackend 'Microsoft.ApiManagement/service/backends@2024-06-01-previ
   }
 }
 
-// 6. Import the Web Search and Browse operations
+// 5. Import the Web Search, Browse, and streamable HTTP MCP operations
 resource webIqApi 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = {
   name: 'web-iq-api'
   parent: apimService
@@ -120,7 +102,7 @@ resource webIqApi 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = {
   }
 }
 
-// 7. Route allowed operations to Web IQ, block Browse, and emit usage metrics
+// 6. Route allowed operations to Web IQ, block Browse across REST and MCP, and emit usage metrics
 resource webIqApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-06-01-preview' = {
   name: 'policy'
   parent: webIqApi
@@ -130,11 +112,10 @@ resource webIqApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-06-0
   }
   dependsOn: [
     webIqBackend
-    webIqApiKeyNamedValue
   ]
 }
 
-// 8. Connect this API to Application Insights without logging bodies or credentials
+// 7. Connect this API to Application Insights without logging bodies or credentials
 resource webIqApiDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2022-08-01' = {
   name: 'applicationinsights'
   parent: webIqApi

@@ -103,6 +103,68 @@
           }
         }
       }
+    },
+    "/mcp": {
+      "post": {
+        "summary": "Send an MCP message",
+        "description": "Proxies streamable HTTP Model Context Protocol messages to the Microsoft Web IQ MCP server.",
+        "operationId": "mcp-post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP JSON or server-sent event response",
+            "content": {
+              "application/json": {},
+              "text/event-stream": {}
+            }
+          },
+          "202": {
+            "description": "MCP notification accepted"
+          },
+          "default": {
+            "description": "MCP transport or Web IQ error response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Open an MCP server event stream",
+        "description": "Opens the optional server-to-client stream used by the streamable HTTP MCP transport.",
+        "operationId": "mcp-get",
+        "responses": {
+          "200": {
+            "description": "MCP server-sent event stream",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "default": {
+            "description": "MCP transport or Web IQ error response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Close an MCP session",
+        "description": "Terminates a streamable HTTP MCP session when the upstream server assigned one.",
+        "operationId": "mcp-delete",
+        "responses": {
+          "200": {
+            "description": "MCP session closed"
+          },
+          "204": {
+            "description": "MCP session closed with no response body"
+          },
+          "default": {
+            "description": "MCP transport or Web IQ error response"
+          }
+        }
+      }
     }
   }
 }

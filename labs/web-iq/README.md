@@ -1,5 +1,5 @@
 ---
-name: Microsoft Web IQ Usage Tracking
+name: Microsoft Web IQ Usage Tracking and MCP
 architectureDiagram: ""
 categories:
   - Knowledge & Tools
@@ -9,20 +9,21 @@ services:
   - Azure API Management
   - Application Insights
   - Log Analytics
-shortDescription: Track Microsoft Web IQ API consumption and block Browse at the APIM gateway.
-detailedDescription: Route Microsoft Web IQ Web Search requests through Azure API Management with API key or optional Microsoft Entra ID authentication, and block the published Browse operation before it reaches Web IQ. Emit privacy-conscious custom metrics to Application Insights so operators can attribute request volume, blocked calls, authentication mode, response status, gateway errors, and latency to individual APIM subscriptions and operations.
+shortDescription: Track Microsoft Web IQ REST and MCP consumption and block Browse at the APIM gateway.
+detailedDescription: Route Microsoft Web IQ Web Search and streamable HTTP MCP requests through Azure API Management with a caller-provided API key or Microsoft Entra ID authentication, and block Browse REST requests and MCP tool calls before they reach Web IQ. Emit privacy-conscious custom metrics to Application Insights so operators can attribute request volume, MCP tool usage, blocked calls, authentication mode, response status, gateway errors, and latency to individual APIM subscriptions and operations.
 tags:
   - Web grounding
   - Usage tracking
   - Custom metrics
+  - Model Context Protocol
 authors: []
 ---
 
 # APIM ❤️ Microsoft Web IQ
 
-## [Microsoft Web IQ Usage Tracking lab](web-iq.ipynb)
+## [Microsoft Web IQ Usage Tracking and MCP lab](web-iq.ipynb)
 
-This lab places Azure API Management in front of the [Microsoft Web IQ](https://webiq.microsoft.ai/documentation/overview/) Web Search and Browse APIs. Clients authenticate to APIM with subscription keys. For Web IQ authentication, APIM either injects its secret API key or passes through an optional Microsoft Entra ID bearer token. APIM blocks Browse with a structured `403` before any backend call and emits custom usage metrics to Application Insights.
+This lab places Azure API Management in front of the [Microsoft Web IQ](https://webiq.microsoft.ai/documentation/overview/) REST and [MCP](https://webiq.microsoft.ai/documentation/mcp/) endpoints. Clients use APIM subscription keys for usage attribution and provide either a Web IQ `x-apikey` header or a Microsoft Entra ID bearer token for upstream authentication. APIM does not create or inject an upstream credential. It blocks Browse through both REST and MCP with a structured `403` before any backend call and emits custom usage metrics to Application Insights.
 
 ```mermaid
 flowchart LR
@@ -31,25 +32,24 @@ flowchart LR
     subgraph Gateway[Azure API Management]
         Subscription[Validate APIM subscription]
         RequestMetric[Emit request metric]
-        Operation{Operation?}
+        Operation{REST operation or<br/>MCP tool?}
         BlockMetric[Emit blocked-request metric]
         Forbidden[Return structured 403]
-        Auth{Web IQ bearer token present?}
-        NamedValue[(Secret named value)]
-        ApiKey[Inject x-apikey<br/>from secret named value]
+        Auth{Web IQ credential present?}
+        Unauthorized[Return structured 401]
         Entra[Pass through Entra bearer token]
         ResponseMetric[Emit response and latency metrics]
         ErrorMetric[Emit gateway-error metric]
     end
     Client -.->|Client credentials<br/>Web IQ scope| MicrosoftEntra
     MicrosoftEntra -.->|Bearer token| Client
-    Client -->|APIM subscription key<br/>optional Web IQ bearer token| Subscription
+    Client -->|APIM subscription key<br/>x-apikey or bearer token| Subscription
     Subscription --> RequestMetric --> Operation
-    Operation -->|Browse| BlockMetric --> Forbidden --> Client
-    Operation -->|Web Search| Auth
-    NamedValue --> ApiKey
-    Auth -->|No| ApiKey --> WebIQ[Microsoft Web IQ]
-    Auth -->|Yes| Entra --> WebIQ
+    Operation -->|REST Browse or<br/>MCP browse| BlockMetric --> Forbidden --> Client
+    Operation -->|Web Search or<br/>allowed MCP traffic| Auth
+    Auth -->|x-apikey| WebIQ[Microsoft Web IQ<br/>REST and MCP]
+    Auth -->|Bearer| Entra --> WebIQ
+    Auth -->|Missing| Unauthorized --> Client
     WebIQ --> ResponseMetric --> Client
     Subscription -.->|Policy or gateway failure| ErrorMetric
     ErrorMetric --> Client
@@ -62,11 +62,12 @@ flowchart LR
 
 ### What you'll learn
 
-- Store the Web IQ API key as a secret APIM named value.
-- Optionally authenticate Web IQ with a Microsoft Entra ID app-only token.
-- Proxy Web Search without exposing the upstream credential.
-- Block Browse before APIM sends a request to Web IQ.
-- Attribute usage to APIM subscriptions and operations.
+- Pass a caller-provided Web IQ API key through APIM without storing it at the gateway.
+- - (Optional) authenticate Web IQ with a Microsoft Entra ID app-only token instead.
+- Strip the APIM subscription credential before forwarding requests upstream.
+- Connect an MCP client to Web IQ through APIM's streamable HTTP endpoint.
+- Block Browse REST requests and MCP tool calls before APIM sends them to Web IQ.
+- Attribute usage to APIM subscriptions, operations, and MCP tools.
 - Query request volume, response status, and latency in Application Insights.
 
 The policy records bounded dimensions only. It does not log search queries, response content, Web IQ API keys, or APIM subscription keys.
@@ -74,7 +75,7 @@ The policy records bounded dimensions only. It does not log search queries, resp
 ### Prerequisites
 
 - [Microsoft Web IQ access](https://webiq.microsoft.ai/documentation/overview/) and an API key from Web IQ Profile Management. Web IQ is currently limited access.
-- Optional for [Entra ID authentication](https://webiq.microsoft.ai/documentation/authentication/#entra-id): an app registration client ID bound in Web IQ Profile Management, its tenant ID, and a client secret.
+- Optional for [Entra ID authentication](https://webiq.microsoft.ai/documentation/authentication/#entra-id): a system managed ID bound in Web IQ Profile Management, its tenant ID, and a client secret.
 - [Python 3.12 or later](https://www.python.org/).
 - [VS Code](https://code.visualstudio.com/) with the [Jupyter extension](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter).
 - [uv](https://docs.astral.sh/uv/) — run `uv sync` at the repository root.
@@ -83,7 +84,8 @@ The policy records bounded dimensions only. It does not log search queries, resp
 
 ### 🚀 Get started
 
-Open [web-iq.ipynb](web-iq.ipynb) and run the steps in order.
+1. Open [web-iq.ipynb](web-iq.ipynb) to deploy the lab and explore the REST API.
+2. Open [web-iq-mcp.ipynb](web-iq-mcp.ipynb) to discover and invoke Web IQ tools over MCP through the same gateway.
 
 ### 🗑️ Clean up resources
 

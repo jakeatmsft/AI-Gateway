@@ -63,7 +63,7 @@ flowchart LR
 ### What you'll learn
 
 - Pass a caller-provided Web IQ API key through APIM without storing it at the gateway.
-- - (Optional) authenticate Web IQ with a Microsoft Entra ID app-only token instead.
+- Optionally authenticate Web IQ with a Microsoft Entra ID app-only token instead.
 - Strip the APIM subscription credential before forwarding requests upstream.
 - Connect an MCP client to Web IQ through APIM's streamable HTTP endpoint.
 - Block Browse REST requests and MCP tool calls before APIM sends them to Web IQ.
@@ -71,6 +71,8 @@ flowchart LR
 - Query request volume, response status, and latency in Application Insights.
 
 The policy records bounded dimensions only. It does not log search queries, response content, Web IQ API keys, or APIM subscription keys.
+
+REST and MCP examples parse results according to the official [Web Response schema](https://webiq.microsoft.ai/documentation/api-reference/web/#web-response).
 
 ### Prerequisites
 
@@ -84,8 +86,9 @@ The policy records bounded dimensions only. It does not log search queries, resp
 
 ### 🚀 Get started
 
-1. Open [web-iq.ipynb](web-iq.ipynb) to deploy the lab and explore the REST API.
-2. Open [web-iq-mcp.ipynb](web-iq-mcp.ipynb) to discover and invoke Web IQ tools over MCP through the same gateway.
+Open [web-iq.ipynb](web-iq.ipynb) to deploy the lab and explore both REST and MCP.
+
+Then run [web-iq-mcp-responses.ipynb](web-iq-mcp-responses.ipynb) to test the APIM-hosted Web IQ MCP tool with the Azure OpenAI Responses API using dotenv connection strings.
 
 ### 🗑️ Clean up resources
 

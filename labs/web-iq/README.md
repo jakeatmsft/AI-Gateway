@@ -56,15 +56,14 @@ flowchart LR
     end
     Client -->|APIM subscription key| Subscription
     Subscription -->|Strip APIM credential| Inspect
-    Inspect -->|REST Browse or MCP browse| Block
+    Inspect -->|Restricted WebIQ ex. Browse| Block
     Inspect -->|Other requests| Auth
     Auth -.->|Request Web IQ access token| Entra
     Entra -.->|Web IQ access token| Auth
     Auth --> Forward
     Forward -->|Bearer token + REST or MCP request| WebIQ[Microsoft Web IQ v3]
     WebIQ -->|Response| Forward
-    Gateway -.->|Custom usage metrics and diagnostics| Insights[Application Insights]
-    Insights --> Logs[Log Analytics workspace]
+    Inspect --> Logs[Log Analytics workspace]
 ```
 
 The deployment creates an APIM instance, two consumer subscriptions, a Web IQ backend and API, an Application Insights resource with dimensional custom metrics enabled, and a Log Analytics workspace. Web IQ is an external service; the deployment does not provision a Web IQ account or key. The optional Responses API notebook also uses an existing Azure OpenAI deployment.

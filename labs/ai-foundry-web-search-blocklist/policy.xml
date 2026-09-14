@@ -1,0 +1,165 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- Inspect a preserved copy. Requests without web_search never enter the blocklist branch. -->
+        <choose>
+            <when condition="@{
+                if (context.Request.Method != &quot;POST&quot; || context.Request.Body == null)
+                {
+                    return false;
+                }
+                JObject body;
+                try
+                {
+                    body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+                var tools = body?[&quot;tools&quot;] as JArray;
+                if (tools == null)
+                {
+                    return false;
+                }
+                foreach (var item in tools)
+                {
+                    var tool = item as JObject;
+                    if (tool?[&quot;type&quot;]?.Type == JTokenType.String &amp;&amp; (string)tool[&quot;type&quot;] == &quot;web_search&quot;)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }">
+                <!-- Reject malformed filters rather than replace caller-supplied values. -->
+                <set-variable name="web-search-validation-error" value="@{
+                    var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                    foreach (var item in (JArray)body[&quot;tools&quot;])
+                    {
+                        var tool = item as JObject;
+                        if (tool?[&quot;type&quot;]?.Type != JTokenType.String || (string)tool[&quot;type&quot;] != &quot;web_search&quot;)
+                        {
+                            continue;
+                        }
+                        var filtersToken = tool[&quot;filters&quot;];
+                        if (filtersToken == null || filtersToken.Type == JTokenType.Null)
+                        {
+                            continue;
+                        }
+                        var filters = filtersToken as JObject;
+                        if (filters == null)
+                        {
+                            return &quot;web_search.filters must be an object or null.&quot;;
+                        }
+                        var blockedToken = filters[&quot;blocked_domains&quot;];
+                        if (blockedToken == null || blockedToken.Type == JTokenType.Null)
+                        {
+                            continue;
+                        }
+                        var blocked = blockedToken as JArray;
+                        if (blocked == null)
+                        {
+                            return &quot;web_search.filters.blocked_domains must be an array of strings or null.&quot;;
+                        }
+                        foreach (var domain in blocked)
+                        {
+                            if (domain.Type != JTokenType.String)
+                            {
+                                return &quot;web_search.filters.blocked_domains must contain only strings.&quot;;
+                            }
+                        }
+                    }
+                    return &quot;&quot;;
+                }" />
+                <choose>
+                    <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;web-search-validation-error&quot;]))">
+                        <return-response>
+                            <set-status code="400" reason="Invalid web-search filters" />
+                            <set-header name="Content-Type" exists-action="override">
+                                <value>application/json</value>
+                            </set-header>
+                            <set-body>@{
+                                return new JObject(
+                                    new JProperty("error", new JObject(
+                                        new JProperty("code", "invalid_web_search_filters"),
+                                        new JProperty("message", (string)context.Variables["web-search-validation-error"])
+                                    ))
+                                ).ToString();
+                            }</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+                <set-body>@{
+                    var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                    var requiredDomains = new string[] {
+                        "youtube.com",
+                        "tiktok.com",
+                        "huggingface.co",
+                        "facebook.com",
+                        "x.ai",
+                        "spotify.com",
+                        "pinterest.com",
+                        "perplexity.ai",
+                        "netflix.com",
+                        "weebly.com",
+                        "repo.maven.apache.org"
+                    };
+                    foreach (var item in (JArray)body["tools"])
+                    {
+                        var tool = item as JObject;
+                        if (tool?["type"]?.Type != JTokenType.String || (string)tool["type"] != "web_search")
+                        {
+                            continue;
+                        }
+                        var filters = tool["filters"] as JObject;
+                        if (filters == null)
+                        {
+                            filters = new JObject();
+                            tool["filters"] = filters;
+                        }
+                        var blocked = filters["blocked_domains"] as JArray;
+                        if (blocked == null)
+                        {
+                            blocked = new JArray();
+                            filters["blocked_domains"] = blocked;
+                        }
+                        foreach (var domain in requiredDomains)
+                        {
+                            bool exists = false;
+                            foreach (var existing in blocked)
+                            {
+                                if (string.Equals((string)existing, domain, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists)
+                            {
+                                blocked.Add(domain);
+                            }
+                        }
+                    }
+                    return body.ToString(Newtonsoft.Json.Formatting.None);
+                }</set-body>
+            </when>
+        </choose>
+        <!-- main.bicep replaces these placeholders for the selected Foundry backend. -->
+        <set-header name="api-key" exists-action="delete" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+        <set-query-parameter name="subscription-key" exists-action="delete" />
+        {backend-authentication}
+        <set-backend-service backend-id="{backend-id}" />
+        <rewrite-uri template="{backend-responses-path}" copy-unmatched-params="true" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

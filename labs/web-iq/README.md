@@ -7,10 +7,11 @@ categories:
 services:
   - Microsoft Web IQ
   - Azure API Management
+  - Azure AI Content Safety
   - Application Insights
   - Log Analytics
-shortDescription: Track Microsoft Web IQ REST and MCP consumption and block Browse at the APIM gateway.
-detailedDescription: Route Microsoft Web IQ Web Search and streamable HTTP MCP requests through Azure API Management. Clients supply an APIM subscription key for consumer attribution and a Web IQ API key or Microsoft Entra ID bearer token for upstream authentication. APIM strips its subscription credential, forwards the caller's Web IQ credential, and blocks Browse REST requests and MCP tool calls before they reach the backend. Custom metrics in Application Insights expose request volume, MCP tool usage, blocked calls, response status, gateway errors, and latency by consumer and operation.
+shortDescription: Track Microsoft Web IQ REST and MCP usage, block Browse, and moderate response text at the APIM gateway.
+detailedDescription: Route Microsoft Web IQ Web Search and MCP requests through Azure API Management. Clients supply an APIM subscription key for consumer attribution and a Web IQ API key or Microsoft Entra ID bearer token for upstream authentication. APIM forwards the caller's Web IQ credential, blocks Browse, and analyzes buffered response text with the four standard Content Safety categories using its system-assigned managed identity. Response headers expose moderation scores, and Application Insights metrics track usage, moderation outcomes, gateway errors, and latency.
 tags:
   - Web grounding
   - Usage tracking
@@ -27,6 +28,8 @@ This lab places Azure API Management (APIM) in front of the [Microsoft Web IQ](h
 
 Each client supplies **two credentials**: an APIM subscription key identifying the consuming team, and a Web IQ API key or Microsoft Entra ID bearer token authenticating the upstream request. The deployed policy forwards the caller-provided Web IQ credential. Although the shared APIM module creates a managed identity, this lab's policy does not use it to acquire Web IQ tokens.
 
+APIM uses its **system-assigned managed identity** to analyze upstream response text with Azure AI Content Safety. The example enables the four standard text categories—Hate, Sexual, Violence, and SelfHarm—and adds moderation telemetry to response bodies and headers. Category scores do not automatically block flagged content.
+
 Start with [web-iq.ipynb](web-iq.ipynb) to deploy the infrastructure and test REST and MCP. Then optionally use [web-iq-mcp-responses.ipynb](web-iq-mcp-responses.ipynb) to let an Azure OpenAI model call the gateway's remote MCP endpoint.
 
 ### What you'll learn
@@ -37,11 +40,12 @@ Start with [web-iq.ipynb](web-iq.ipynb) to deploy the infrastructure and test RE
 - Discover and invoke Web IQ tools over streamable HTTP MCP.
 - Block the Browse REST operation and MCP tool before either reaches Web IQ.
 - Query requests, blocked calls, response codes, gateway errors, and latency by subscription and operation.
+- Inspect standard text moderation scores on Web IQ responses without supplying a Content Safety key.
 - Validate remote MCP calls made by the Azure OpenAI Responses API.
 
 ### Architecture
 
-The diagram shows the target flow with APIM managed identity acquiring a Web IQ access token. The current policy and notebook examples still use caller-provided Web IQ credentials.
+The diagram shows the target flow with APIM managed identity acquiring a Web IQ access token. The current policy and notebook examples still use caller-provided Web IQ credentials. Content Safety is shown as an **optional architecture step**; the deployed example always enables response text moderation, using APIM's system-assigned identity for Content Safety.
 
 ```mermaid
 flowchart LR
@@ -53,6 +57,8 @@ flowchart LR
         Block[Return BrowseOperationBlocked: 403]
         Auth[APIM managed identity]
         Forward[Set Web IQ bearer token]
+        Moderate[Optional: moderate response text]
+        Telemetry[Add Content Safety results and headers]
     end
     Client -->|APIM subscription key| Subscription
     Subscription -->|Strip APIM credential| Inspect
@@ -62,11 +68,15 @@ flowchart LR
     Entra -.->|Web IQ access token| Auth
     Auth --> Forward
     Forward -->|Bearer token + REST or MCP request| WebIQ[Microsoft Web IQ v3]
-    WebIQ -->|Response| Forward
+    WebIQ -->|Buffered response| Moderate
+    Moderate -.->|APIM system managed identity| Safety[Azure AI Content Safety]
+    Safety -.->|Hate, Sexual, Violence, SelfHarm scores| Moderate
+    Moderate --> Telemetry
+    Telemetry -->|Response and moderation telemetry| Client
     Inspect --> Logs[Log Analytics workspace]
 ```
 
-The deployment creates an APIM instance, two consumer subscriptions, a Web IQ backend and API, an Application Insights resource with dimensional custom metrics enabled, and a Log Analytics workspace. Web IQ is an external service; the deployment does not provision a Web IQ account or key. The optional Responses API notebook also uses an existing Azure OpenAI deployment.
+The deployment creates an APIM instance, two consumer subscriptions, a Web IQ backend and API, a Content Safety S0 resource, an Application Insights resource with dimensional custom metrics enabled, and a Log Analytics workspace. It assigns APIM's system identity the **Cognitive Services User** role on the Content Safety resource and disables key authentication there. Web IQ is an external service; the deployment does not provision a Web IQ account or key. The optional Responses API notebook also uses an existing Azure OpenAI deployment.
 
 ### Folder contents
 
@@ -77,6 +87,8 @@ The deployment creates an APIM instance, two consumer subscriptions, a Web IQ ba
 | [main.bicep](main.bicep) | Compose shared infrastructure modules and configure the backend, API, policy, and diagnostics. |
 | [openapi.json](openapi.json) | Define Web Search, Browse, and MCP operations and their stable operation IDs. |
 | [policy.xml](policy.xml) | Handle credentials, classify MCP traffic, block Browse, forward requests, and emit metrics. |
+| [content-safety-outbound.xml](content-safety-outbound.xml) | Analyze response text with the standard categories and attach moderation telemetry. |
+| [content_safety.py](content_safety.py) | Extract moderation telemetry from REST/MCP results and format notebook table rows. |
 | [clean-up-resources.ipynb](clean-up-resources.ipynb) | Remove the lab resource group using the shared cleanup helper. |
 
 The notebooks use [shared/utils.py](../../shared/utils.py) and the repository's [Python environment](../../pyproject.toml). The deployment notebook generates a local `params.json`. An optional `.env` stores local configuration. Both filenames are ignored by Git.
@@ -131,9 +143,9 @@ Edit the initialization cell before deploying if you need different names, a dif
 | `web_iq_api_path` | `web-iq` | Gateway URL prefix for all operations. |
 | `apim_subscriptions_config` | `research-team`, `support-team` | Consumer subscriptions used in the sample requests and metrics. |
 
-The Bicep parameters are `apimSku`, `apimSubscriptionsConfig`, `webIqApiPath`, and `webIqServiceUrl`. The upstream service URL defaults to `https://api.microsoft.ai/v3`. The notebook supplies the first three parameters; direct Bicep deployments must supply subscription configuration to create the two sample consumers, because the template's array default is empty.
+The Bicep parameters are `apimSku`, `apimSubscriptionsConfig`, `webIqApiPath`, `webIqServiceUrl`, and `contentSafetyLocation`. Content Safety defaults to the resource group's region; choose a supported region if needed. The upstream service URL defaults to `https://api.microsoft.ai/v3`. The notebook supplies the first three parameters; direct Bicep deployments must supply subscription configuration to create the two sample consumers, because the template's array default is empty.
 
-APIM and monitoring resources incur Azure charges while deployed. Web IQ usage and the optional Azure OpenAI calls may incur separate charges under your service agreements.
+APIM, monitoring, and Content Safety usage incur Azure charges. Each analyzed text chunk makes a Content Safety API call. Web IQ usage and the optional Azure OpenAI calls may incur separate charges under your service agreements.
 
 #### 4. Deploy and run the examples
 
@@ -152,7 +164,7 @@ With the default API path, the client base URL is `https://<apim-name>.azure-api
 | `POST /web-iq/search/web` | `search-web` | Forward Web Search to Web IQ. |
 | `POST /web-iq/browse` | `browse-url` | Return the policy's structured `403 Forbidden`. |
 | `POST /web-iq/mcp` | `mcp-post` | Forward MCP messages, except `tools/call` for `browse`. |
-| `GET /web-iq/mcp` | `mcp-get` | Proxy the optional server-to-client event stream. |
+| `GET /web-iq/mcp` | `mcp-get` | Return `405`; the optional long-lived event stream is disabled to support complete response moderation. |
 | `DELETE /web-iq/mcp` | `mcp-delete` | Proxy session termination when supported upstream. |
 
 Every operation requires a valid APIM subscription. Allowed upstream calls also require one of the following Web IQ credentials:
@@ -177,7 +189,39 @@ curl --request POST "${APIM_GATEWAY_URL%/}/web-iq/search/web" \
   --data '{"query":"What is Azure API Management?","maxResults":3,"maxLength":3000,"contentFormat":"markdown"}'
 ```
 
-A successful response follows the [Web Response schema](https://webiq.microsoft.ai/documentation/api-reference/web/#web-response). The notebook summarizes `traceId`, `querySignals`, instrumentation availability, and `webResults` entries, including titles, URLs, content previews, timestamps, language, and content metadata. The policy adds an `x-apim-request-id` response header for gateway correlation.
+A successful response follows the [Web Response schema](https://webiq.microsoft.ai/documentation/api-reference/web/#web-response). The notebook summarizes `traceId`, `querySignals`, instrumentation availability, and `webResults` entries, including titles, URLs, content previews, timestamps, language, and content metadata. The policy adds an `x-apim-request-id` response header for gateway correlation and the Content Safety headers described below. Add `--include` to the curl command to display these headers.
+
+### Standard response text moderation
+
+Every upstream response with text passes through `POST /contentsafety/text:analyze?api-version=2024-09-01` before APIM releases it. This applies to REST, MCP discovery and tool results, session responses, and upstream error bodies. APIM authenticates the separate moderation request with its system-assigned managed identity and the `https://cognitiveservices.azure.com` audience. Caller credentials are forwarded only to Web IQ.
+
+Only the four standard text categories are enabled. There are no custom blocklists, Prompt Shields, image moderation, or custom blocking thresholds. The API uses `FourSeverityLevels`: **0** (safe), **2** (low), **4** (medium), and **6** (high). A successfully analyzed response retains its original status and result data, including flagged content, with added moderation telemetry. The scores are telemetry for consumers to interpret, not a guarantee that content is safe.
+
+REST JSON objects include a top-level `contentSafety` object with `status`, `scores`, `chunks`, `latencyMs`, and `requestId`. MCP results include the same object in `result._meta.contentSafety`. Tool results also include it in `structuredContent` and the first text content block, so clients that expose only structured content or only the first text block retain the scores. JSON tool text gets an added `contentSafety` property; plain tool text retains its original text followed by the telemetry JSON. JSON-RPC errors include telemetry in `error.data.contentSafety`. Finite SSE responses preserve event IDs, event types, and original result data while adding telemetry to JSON data frames. Plain-text and empty responses retain header telemetry only.
+
+Both notebooks display a **Content Safety results table** with one row per request/tool call and separate **Hate**, **Sexual**, **Violence**, and **SelfHarm** columns. The Responses notebook reads actual `mcp_call.output`; the model's final answer may omit this telemetry. After updating the policy, rerun the request/tool-invocation cell followed by the results cell. Saved responses from before the update cannot contain the new body fields. Missing scores display as missing values, not zero.
+
+| Response header | Meaning |
+| --- | --- |
+| `x-content-safety-status` | `analyzed`, `no-text`, `not-applicable`, `error`, `response-too-large`, or `unsupported-encoding`. |
+| `x-content-safety-scores` | Compact JSON with the highest severity across chunks for `Hate`, `Sexual`, `Violence`, and `SelfHarm`. Present only after a complete, successful analysis. |
+| `x-content-safety-chunks` | Number of Content Safety requests attempted for this response. |
+| `x-content-safety-latency-ms` | Time spent extracting and analyzing the response text. |
+
+For example, a completely analyzed response can include:
+
+```http
+x-content-safety-status: analyzed
+x-content-safety-scores: {"Hate":0,"Sexual":0,"Violence":2,"SelfHarm":0}
+x-content-safety-chunks: 1
+x-content-safety-latency-ms: 185
+```
+
+The policy extracts JSON string values, decodes JSON embedded in MCP text, and parses the data frames of finite SSE responses. It analyzes plain text directly. Text is split into chunks of at most 10,000 UTF-16 code units (within the API's 10,000-code-point limit), with 200 units of overlap and intact surrogate pairs. The lab accepts up to 100,000 extracted units per response; larger responses return `502` with `ContentSafetyAnalysisFailed` instead of being truncated. Analysis failures, incomplete category results, or unexpected compressed responses also return `502` without the upstream body. Check the status header and gateway telemetry, then retry or reduce the result size.
+
+Empty acknowledgments or responses containing no text report `no-text` and make no moderation call. Gateway-generated Browse denials, missing-credential errors, and MCP GET rejections report `not-applicable`, because there is no upstream content to analyze. Unexpected policy errors during moderation report `error`; chunk and latency headers may be absent on that error path.
+
+Response text is sent to the deployed Content Safety resource for analysis. Application Insights custom metrics contain only status, timing, and the existing bounded dimensions; they do not contain the analyzed text. Redeploy `main.bicep` to install the resource, role assignment, fragment, and updated API policy. New managed-identity role assignments may need several minutes to propagate.
 
 #### Optional Web IQ Entra ID authentication
 
@@ -193,7 +237,7 @@ The optional notebook cell uses MSAL's client-credentials flow with scope `https
 
 ### MCP discovery and Browse enforcement
 
-The main notebook uses `streamablehttp_client` and `ClientSession` to initialize an MCP session, list available tools, and call `web` with the same search arguments used by REST. APIM forwards responses with `buffer-response="false"` to support streaming. Tool availability depends on the Web IQ account; the discovery cell requires `web` to be present.
+MCP clients use the same search arguments and caller credentials as REST. APIM uses `buffer-response="true"` and reads the complete response before moderation, so finite SSE messages from `POST /mcp` retain their framing but arrive after analysis. The optional long-lived `GET /mcp` stream returns `405 Method Not Allowed` with `Allow: POST, DELETE`, as permitted by the MCP transport. Use clients that support this mode. This example does not provide live server-initiated notifications or incremental delivery. Tool availability depends on the Web IQ account.
 
 For `POST /mcp`, the policy inspects the JSON-RPC method and `params.name` while preserving the request body. It labels tool calls with one of `web`, `videos`, `browse`, `news`, `images`, or `unknown`. Non-tool messages and unparseable bodies receive the `protocol` label. Other operations receive `N/A`. This classification bounds the metric values; it is not a tool allowlist.
 
@@ -220,15 +264,20 @@ flowchart LR
     Responses[Azure OpenAI Responses API]
     Gateway[APIM Web IQ MCP endpoint]
     WebIQ[Microsoft Web IQ]
+    Safety[Optional: Content Safety text moderation]
     Notebook -.->|DefaultAzureCredential| Entra
     Entra -.->|Azure OpenAI access token| Notebook
     Notebook -->|responses.create with MCP configuration| Responses
     Responses -->|APIM subscription key + Web IQ API key| Gateway
     Gateway -->|Forward Web IQ API key for allowed calls| WebIQ
     WebIQ -->|Tool results| Gateway
-    Gateway -->|Tool results or Browse 403| Responses
+    Gateway -.->|Buffered response text; APIM system managed identity| Safety
+    Safety -.->|Hate, Sexual, Violence, SelfHarm scores| Gateway
+    Gateway -->|Tool results with safety telemetry, or gateway error| Responses
     Responses -->|Answer and MCP events| Notebook
 ```
+
+Content Safety is an optional step in this architecture diagram and is always enabled in the deployed example. Safety telemetry is included in MCP tool content so the Responses notebook can display it from `mcp_call.output`, even when transport headers are not exposed.
 
 Add these connection strings to `labs/web-iq/.env`, substituting the deployed gateway and your existing Azure OpenAI resource:
 
@@ -256,6 +305,8 @@ All policy metrics use the `web-iq` namespace. Application Insights is configure
 | `Web IQ Responses` | `1` when a request reaches the outbound policy, with its HTTP status. |
 | `Web IQ Latency` | `context.Elapsed.TotalMilliseconds` at the outbound policy, with the HTTP status. |
 | `Web IQ Gateway Errors` | `1` when the gateway executes the `on-error` policy. |
+| `Web IQ Content Safety Responses` | `1` per outbound moderation outcome, grouped by `Content Safety Status`. |
+| `Web IQ Content Safety Latency` | Milliseconds spent extracting and moderating response text. |
 
 Requests and blocked calls carry `Subscription ID`, `Operation ID`, `Authentication`, and `MCP Tool` dimensions. Responses and latency add `Status Code`. Gateway errors include only `Subscription ID`, `Operation ID`, and `MCP Tool`. Authentication labels are `API key`, `Entra ID`, and `Missing`; they describe the supplied credential, not successful upstream validation.
 
@@ -265,7 +316,7 @@ Interpret the metrics according to their policy stage:
 
 - An inbound `return-response`, including the Browse `403` or missing-credential `401`, skips the outbound response and latency metrics. Use the blocked metric for Browse denials.
 - One MCP tool invocation can involve several HTTP requests for initialization, discovery, tool execution, and session management. Filter by `MCP Tool = web` when measuring Web Search tool calls.
-- Latency measures elapsed gateway time at the outbound policy; it does not measure the full duration of a streamed response or an Azure OpenAI answer.
+- Latency includes buffering and Content Safety processing at the outbound policy. It does not measure the full duration of an Azure OpenAI answer.
 - Gateway errors are separate from HTTP error responses returned by Web IQ. Inspect response status metrics for upstream failures.
 
 #### Query request volume and blocked calls
@@ -286,7 +337,7 @@ customMetrics
 | order by Requests desc
 ```
 
-The main notebook runs this query through `az monitor app-insights query` and includes a separate latency query grouped by subscription, operation, authentication, MCP tool, and status code. Custom metrics may take several minutes to arrive; extend the time range if your calls are older than an hour.
+The main notebook uses the installed `az` command and its signed-in account to query the Application Insights API through `az rest`. KQL is sent in a temporary JSON file, preserving quotes, comments, and line breaks across Windows, Linux, and macOS. The notebook kernel does not need the `azure.cli` Python package or the Application Insights CLI extension. Separate queries report latency and Content Safety outcomes. Query failures raise an error instead of appearing as an empty table. Custom metrics may take several minutes to arrive; the helper's `PT1H` timespan and the queries' `ago(1h)` filters cover the last hour—update both for an older range.
 
 For a chart, open **Metrics**, select the `web-iq` custom namespace and a metric, and split by the available dimensions. These metrics describe gateway consumption. Web IQ's [citation and click instrumentation](https://webiq.microsoft.ai/documentation/instrumentation/) is a separate feature.
 
@@ -304,13 +355,17 @@ For a chart, open **Metrics**, select the `web-iq` custom namespace and a metric
 | Responses API reports a missing model/deployment | Review the positive test's hard-coded model and use the deployment name from `AZURE_OPENAI_CONNECTION_STRING`. |
 | Responses API cannot reach MCP | Check public HTTPS reachability from Azure OpenAI and both required headers in `WEB_IQ_MCP_CONNECTION_STRING`. Local notebook connectivity alone is insufficient. |
 | Azure OpenAI authentication fails after a long pause | Check the role assignment and selected identity, then rerun the client-creation cell to acquire a fresh token; the current notebook passes a token string to the SDK. |
-| Usage queries are empty | Allow for ingestion delay, check the Application Insights resource and time range, and verify deployment of the logger, dimensional metrics, and API diagnostics. If the CLI requests the Application Insights extension, install it with `az extension add --name application-insights`. |
+| Usage query fails with `No module named azure.cli` | Rerun the updated query-helper cell. It calls the installed `az` command independently of the notebook's Python environment. Ensure Azure CLI is on the kernel's PATH and authenticated with `az login`. |
+| Usage query fails with `BadArgumentError` on Windows | Rerun the updated query-helper cell. It sends KQL through a JSON file, avoiding the Windows shell quoting and multiline argument problems of the earlier helper. |
+| Usage queries are empty | Allow for ingestion delay, check the Application Insights resource and time range, and verify deployment of the logger, dimensional metrics, and API diagnostics. |
+| `502` with `ContentSafetyAnalysisFailed` | Inspect `x-content-safety-status`. Check Content Safety availability/quota and APIM's resource-scoped Cognitive Services User role; allow for role propagation. For `response-too-large`, reduce result count or length. The original response is withheld when analysis cannot complete. |
+| MCP GET returns `405`, or POST results arrive all at once | Expected for this example: complete response moderation buffers POST results and disables the optional long-lived GET stream. |
 
 ### 🗑️ Clean up resources
 
 Run [clean-up-resources.ipynb](clean-up-resources.ipynb) from this folder when finished. Its defaults target deployment `web-iq` in resource group `lab-web-iq`; update both values if you changed them during setup.
 
-The shared cleanup helper deletes and purges the lab APIM instance and removes the resource group, including its subscriptions, Application Insights resource, and Log Analytics workspace. It removes everything in that group, so use a dedicated lab resource group. Confirm cleanup succeeded in the notebook output and Azure portal.
+The shared cleanup helper deletes and purges the lab APIM instance and removes the resource group, including its subscriptions, Content Safety resource, Application Insights resource, and Log Analytics workspace. It removes everything in that group, so use a dedicated lab resource group. Confirm cleanup succeeded in the notebook output and Azure portal.
 
 Your external Web IQ account and API key, optional Entra app registration, and any Azure OpenAI deployment outside the lab resource group remain. Local `.env` and `params.json` files also remain and can be removed when you no longer need them.
 
@@ -322,4 +377,6 @@ Your external Web IQ account and API key, optional Entra app registration, and a
 - [Web IQ MCP documentation](https://webiq.microsoft.ai/documentation/mcp/)
 - [Web IQ citation and click instrumentation](https://webiq.microsoft.ai/documentation/instrumentation/)
 - [Azure API Management custom metrics policy](https://learn.microsoft.com/azure/api-management/emit-metric-policy)
+- [Content Safety Analyze Text API](https://learn.microsoft.com/rest/api/contentsafety/text-operations/analyze-text?view=rest-contentsafety-2024-09-01)
+- [APIM send-request policy](https://learn.microsoft.com/azure/api-management/send-request-policy)
 - [Azure OpenAI Responses API: remote MCP servers](https://learn.microsoft.com/azure/foundry/openai/how-to/responses#using-remote-mcp-servers)

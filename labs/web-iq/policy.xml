@@ -60,6 +60,9 @@
                     <set-header name="x-apim-request-id" exists-action="override">
                         <value>@(context.RequestId.ToString())</value>
                     </set-header>
+                    <set-header name="x-content-safety-status" exists-action="override">
+                        <value>not-applicable</value>
+                    </set-header>
                     <set-body>{"errorCode":"BrowseOperationBlocked","errorCategory":"UserError","userMessage":"The Browse operation and MCP tool are disabled by the API Management policy."}</set-body>
                 </return-response>
             </when>
@@ -77,6 +80,9 @@
                     <set-header name="x-apim-request-id" exists-action="override">
                         <value>@(context.RequestId.ToString())</value>
                     </set-header>
+                    <set-header name="x-content-safety-status" exists-action="override">
+                        <value>not-applicable</value>
+                    </set-header>
                     <set-body>{"errorCode":"WebIqAuthenticationRequired","errorCategory":"UserError","userMessage":"Provide a Web IQ x-apikey header or Entra ID bearer token."}</set-body>
                 </return-response>
             </when>
@@ -84,13 +90,39 @@
                 <set-header name="Authorization" exists-action="delete" />
             </otherwise>
         </choose>
+        <choose>
+            <when condition="@(context.Operation.Id == &quot;mcp-get&quot;)">
+                <!-- MCP permits 405 when the optional long-lived GET stream is unsupported.
+                     POST responses are buffered and moderated before delivery. -->
+                <return-response>
+                    <set-status code="405" reason="Method Not Allowed" />
+                    <set-header name="Allow" exists-action="override">
+                        <value>POST, DELETE</value>
+                    </set-header>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="x-apim-request-id" exists-action="override">
+                        <value>@(context.RequestId.ToString())</value>
+                    </set-header>
+                    <set-header name="x-content-safety-status" exists-action="override">
+                        <value>not-applicable</value>
+                    </set-header>
+                    <set-body>{"errorCode":"McpEventStreamDisabled","userMessage":"Use MCP POST requests. This gateway buffers complete responses for text moderation."}</set-body>
+                </return-response>
+            </when>
+        </choose>
+        <set-header name="Accept-Encoding" exists-action="override">
+            <value>identity</value>
+        </set-header>
         <set-backend-service backend-id="web-iq-backend" />
     </inbound>
     <backend>
-        <forward-request buffer-response="false" />
+        <forward-request buffer-response="true" />
     </backend>
     <outbound>
         <base />
+        <include-fragment fragment-id="web-iq-content-safety" />
         <emit-metric name="Web IQ Responses" value="1" namespace="web-iq">
             <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
@@ -116,5 +148,29 @@
             <dimension name="Operation ID" />
             <dimension name="MCP Tool" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;web-iq-mcp-tool&quot;, &quot;N/A&quot;))" />
         </emit-metric>
+        <choose>
+            <when condition="@(context.Variables.ContainsKey(&quot;web-iq-safety-start&quot;))">
+                <emit-metric name="Web IQ Content Safety Responses" value="1" namespace="web-iq">
+                    <dimension name="Subscription ID" />
+                    <dimension name="Operation ID" />
+                    <dimension name="Content Safety Status" value="error" />
+                </emit-metric>
+                <return-response>
+                    <set-status code="502" reason="Bad Gateway" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="Content-Encoding" exists-action="delete" />
+                    <set-header name="x-apim-request-id" exists-action="override">
+                        <value>@(context.RequestId.ToString())</value>
+                    </set-header>
+                    <set-header name="x-content-safety-status" exists-action="override">
+                        <value>error</value>
+                    </set-header>
+                    <set-header name="x-content-safety-scores" exists-action="delete" />
+                    <set-body>{"errorCode":"ContentSafetyAnalysisFailed","userMessage":"The gateway could not complete response text moderation."}</set-body>
+                </return-response>
+            </when>
+        </choose>
     </on-error>
 </policies>

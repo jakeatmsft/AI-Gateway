@@ -14,6 +14,9 @@ param webIqApiPath string = 'web-iq'
 @description('Microsoft Web IQ v3 service URL.')
 param webIqServiceUrl string = 'https://api.microsoft.ai/v3'
 
+@description('Azure region for the Content Safety text moderation resource.')
+param contentSafetyLocation string = resourceGroup().location
+
 // ------------------
 //    VARIABLES
 // ------------------
@@ -52,6 +55,7 @@ module apimModule '../../modules/apim/v3/apim.bicep' = {
   name: 'apimModule'
   params: {
     apimSku: apimSku
+    apimManagedIdentityType: 'SystemAssigned'
     apimSubscriptionsConfig: apimSubscriptionsConfig
     lawId: lawModule.outputs.id
     appInsightsId: appInsightsModule.outputs.id
@@ -63,6 +67,45 @@ resource apimService 'Microsoft.ApiManagement/service@2024-06-01-preview' existi
   name: apiManagementName
   dependsOn: [
     apimModule
+  ]
+}
+
+// Content Safety is always enabled in this example and uses APIM's system identity.
+resource contentSafetyResource 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: 'contentsafety-${resourceSuffix}'
+  location: contentSafetyLocation
+  kind: 'ContentSafety'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: 'contentsafety-${resourceSuffix}'
+    publicNetworkAccess: 'Enabled'
+    disableLocalAuth: true
+  }
+}
+
+var cognitiveServicesUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
+resource contentSafetyRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(contentSafetyResource.id, apimService.id, cognitiveServicesUserRoleId)
+  scope: contentSafetyResource
+  properties: {
+    roleDefinitionId: cognitiveServicesUserRoleId
+    principalId: apimModule.outputs.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource contentSafetyPolicyFragment 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = {
+  name: 'web-iq-content-safety'
+  parent: apimService
+  properties: {
+    description: 'Moderate complete Web IQ responses using the four standard text categories.'
+    format: 'rawxml'
+    value: replace(loadTextContent('content-safety-outbound.xml'), '{content-safety-endpoint}', contentSafetyResource.properties.endpoint)
+  }
+  dependsOn: [
+    contentSafetyRoleAssignment
   ]
 }
 
@@ -112,6 +155,7 @@ resource webIqApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-06-0
   }
   dependsOn: [
     webIqBackend
+    contentSafetyPolicyFragment
   ]
 }
 
@@ -154,3 +198,4 @@ output apimServiceId string = apimModule.outputs.id
 output apimResourceGatewayURL string = apimModule.outputs.gatewayUrl
 output apimSubscriptions array = apimModule.outputs.apimSubscriptions
 output webIqApiPath string = webIqApiPath
+output contentSafetyEndpoint string = contentSafetyResource.properties.endpoint

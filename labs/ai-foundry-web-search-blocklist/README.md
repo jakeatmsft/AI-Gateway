@@ -1,107 +1,229 @@
-# Foundry web-search domain blocklist with API Management
+# Foundry web-search blocklist and search accounting with API Management
 
-This lab uses an APIM inbound policy to append organization domains to
-`tools[].filters.blocked_domains` on Azure OpenAI Responses API requests. The
-merge runs only for tools whose `type` is exactly `web_search`.
+This lab adds organization domains to `tools[].filters.blocked_domains` and
+counts the searches exposed by Azure OpenAI Responses API web-search calls.
+JSON responses carry an APIM-logged `x-web-search-count`. Streaming requests use
+an HTTP-only Azure Function that forwards SSE events as they arrive and reports
+the final count to a protected APIM API.
 
-The policy adds these 11 domains:
+## Architecture
 
-```text
-youtube.com
-tiktok.com
-huggingface.co
-facebook.com
-x.ai
-spotify.com
-pinterest.com
-perplexity.ai
-netflix.com
-weebly.com
-repo.maven.apache.org
+```mermaid
+sequenceDiagram
+    participant Client
+    participant APIM
+    participant Proxy as Azure Function
+    participant Foundry
+    participant Logs as Azure Monitor
+
+    Client->>APIM: Responses request (stream=true)
+    APIM->>Proxy: Apply blocklist, attach request ID and proxy key
+    Proxy->>Foundry: Streaming Responses request
+    loop As events arrive
+        Foundry-->>Proxy: SSE chunk
+        Proxy-->>APIM: SSE chunk
+        APIM-->>Client: SSE chunk
+    end
+    Proxy->>APIM: Report final count and original request ID
+    APIM-->>Proxy: 204 with count/status/correlation headers
+    APIM->>Logs: GatewayLogs containing report headers
 ```
 
-Existing blocked domains keep their values and order. The policy appends only
-missing domains, comparing names without case sensitivity. It preserves
-`allowed_domains`, other filter settings, other tools, and the rest of the JSON
-request. Reapplying the policy does not append another copy of the domains.
+JSON requests go directly from APIM to Foundry. The existing APIM service,
+Foundry account/model, and Log Analytics workspace are reused.
 
-Requests without `web_search` bypass blocklist validation and body rewriting.
-Missing or null `filters` / `blocked_domains` are initialized when needed. A
-web-search tool with malformed filters or a blocklist that is not an array of
-strings gets HTTP 400; the policy does not discard and replace malformed values.
+| New component | Purpose |
+| --- | --- |
+| Function `func-wsc-<suffix>-http` | Python HTTP-streaming proxy and direct usage reporting |
+| Plan `plan-wsc-<suffix>` | Linux B1, one instance, Always On |
+| APIM backend `<apiName>-streaming-proxy` | Calls the Function with a private `x-proxy-key` |
+| APIM API `<apiName>-usage` | Receives usage reports and logs their response headers |
+| Subscription `<apiName>-proxy-reporter` | Dedicated credential for the reporting API |
 
-Microsoft documents domain filtering for **`web_search` in the Responses API**.
-The policy leaves `web_search_preview` and dated preview types unchanged because
-they do not support this filtering contract. Use `web_search` for this sample.
-This controls search sources; it does not filter arbitrary domain mentions in
-model output or implement a network firewall.
+`<apiName>` defaults to `web-search-blocklist`; `<suffix>` is derived from the
+resource-group ID and API name. No storage account, queue, or private networking
+resources are provisioned.
 
-## Prerequisites
+## Prerequisites and setup
 
-- Python 3.12+, VS Code with Jupyter, and dependencies installed with `uv sync`
-  at the repository root.
-- Azure CLI signed in with permission to read APIM and deploy APIs in its resource
-  group, plus permission to create role assignments on the Foundry account
-  (for example, Owner or Role Based Access Control Administrator).
-- An existing APIM service and an existing Foundry model deployment that supports
-  `web_search`. Web search must be enabled in the Azure subscription.
-- An APIM subscription key scoped to all APIs or to this lab's API. A key scoped
-  to another lab API or a product that does not contain this API will not work.
+- Python 3.12+, VS Code/Jupyter, and `uv sync` run at the repository root.
+- Azure CLI authenticated with permission to deploy APIM APIs, a Function App,
+  and an App Service plan, plus permission to assign roles on Foundry.
+- Existing APIM and Foundry resources, a model deployment supporting
+  `web_search`, and web search enabled in the subscription.
+- An APIM subscription key scoped to this lab's API or all APIs.
 
-On Windows, the helper resolves `az.cmd` from `PATH` and invokes Azure CLI's
-bundled Python directly. It can also use `azure-cli` installed in the notebook's
-Python environment. If neither is available, install Azure CLI and restart
-VS Code/Jupyter to refresh its `PATH`, or run `%pip install azure-cli` in the
-notebook environment. Authenticate with `az login` before preparing deployment.
+1. Copy [.env.example](.env.example) to `.env` and set `APIM_SERVICE_ID`,
+   `APIM_SUBSCRIPTION_KEY`, and `AZURE_OPENAI_DEPLOYMENT`.
+2. Set `BACKEND_ID` (or `APIM_BACKEND_ID`) to reuse an existing Foundry backend.
+   Otherwise, set `AZURE_OPENAI_ENDPOINT` to create a backend on existing APIM.
+   A backend ID takes precedence over endpoint/key settings.
+3. Open [ai-foundry-web-search-blocklist.ipynb](ai-foundry-web-search-blocklist.ipynb)
+   and run the cells in order. Choose unused `APIM_API_NAME` / `APIM_API_PATH`
+   values for the first deployment; later runs update the same API.
 
-## Run the sample
+The loader reads the repository-root `.env`, then the lab `.env`; process
+variables take precedence. Select another file with `load_config(env_file=...)`
+or `LAB_ENV_FILE`. An explicit file replaces the default file search.
 
-1. Copy [.env.example](.env.example) to `.env` in this directory and supply your
-   existing resources. Alternatively select an existing file in the notebook,
-   or set `LAB_ENV_FILE` to its path. For example:
+The helper enables APIM's system-assigned identity when needed and grants
+**Cognitive Services OpenAI User** at Foundry account scope. It preserves existing
+identities and assignments. Both APIM and the Function use Entra authentication
+for `https://ai.azure.com`. An optional `AZURE_OPENAI_API_KEY` enables key
+authentication only when creating a backend from an endpoint.
 
-   ```python
-   config = load_config(env_file="../secure-responses-api/.env")
-   ```
+The Foundry account is discovered by hostname in the APIM subscription. Set
+`AZURE_OPENAI_RESOURCE_ID` for a different subscription or custom hostname.
+For backend pools, set `AZURE_OPENAI_RESOURCE_IDS`, `BACKEND_RESPONSES_PATH`, and
+`STREAMING_PROXY_FOUNDRY_RESPONSES_URL`; the Function uses that concrete URL.
+Other optional settings are documented in [.env.example](.env.example).
 
-   Without an explicit path, the loader reads the repository-root `.env`, then
-   this lab's `.env`. Process environment variables take precedence. An explicit
-   file replaces that file search. Other labs' environment files are not loaded
-   automatically.
+| Backend URL ends in | Default relative Responses path |
+| --- | --- |
+| Resource hostname | `/openai/v1/responses` |
+| `/openai` | `/v1/responses` |
+| `/openai/v1` | `/responses` |
 
-2. Set `APIM_SERVICE_ID`, `APIM_SUBSCRIPTION_KEY`, and
-   `AZURE_OPENAI_DEPLOYMENT`. To reuse the existing APIM Foundry backend, set
-   `BACKEND_ID` (or `APIM_BACKEND_ID`). Its existing URL is reused, and this lab's
-   API uses APIM's system-assigned managed identity to obtain a Microsoft Entra
-   token for `https://ai.azure.com`, as documented for the Responses API. The policy sets the backend
-   `Authorization: Bearer ...` header. A reused backend must not override that
-   header with different credentials.
+### Proxy deployment and configuration
 
-3. If no backend ID is configured, set `AZURE_OPENAI_ENDPOINT` (or
-   `AZURE_AI_FOUNDRY_ENDPOINT`) to an existing Foundry resource endpoint. This
-   creates one backend on the existing APIM service. An optional
-   `AZURE_OPENAI_API_KEY` supplies backend authentication; otherwise the sample
-   enables APIM's system-assigned identity if needed and grants it **Cognitive
-   Services OpenAI User** on the Foundry account. Existing user-assigned
-   identities and role assignments are preserved. The sample does not create
-   Foundry accounts or model deployments.
+`deploy(config, prepared)` provisions [streaming-proxy.bicep](streaming-proxy.bicep)
+under `<apiName>-proxy-function`, grants the Function access to Foundry, and
+publishes the five runtime files from `proxy/` using a remote Python build.
+It stops/starts the Function and checks the authenticated route before deploying
+[main.bicep](main.bicep) under `<apiName>` to configure APIM routing and logging.
+The default client endpoint is `https://<apim>/web-search/openai/v1/responses`.
 
-4. Open [ai-foundry-web-search-blocklist.ipynb](ai-foundry-web-search-blocklist.ipynb)
-   and run its cells in order. The preparation cell reads the backend URL and
-   resolves the Responses path. The deployment cell grants backend access and
-   creates a dedicated API,
-   defaulting to `POST https://<apim>/web-search/openai/v1/responses`. Choose an
-   unused `APIM_API_NAME` / `APIM_API_PATH` for the first run; subsequent runs
-   update that same lab API.
+The Function uses Python 3.12, Functions v4, `PYTHON_ENABLE_INIT_INDEXING=1`, and
+`AzureWebJobsSecretStorageType=files`. Host keys use the platform filesystem;
+`AzureWebJobsStorage` and Azure Files connection settings are omitted.
 
-The deployment helper discovers the Foundry account from the backend hostname
-in the APIM subscription. Set `AZURE_OPENAI_RESOURCE_ID` explicitly if the
-account is in another subscription or uses a custom hostname. For a backend
-pool, set `AZURE_OPENAI_RESOURCE_IDS` to a comma-separated list of its Foundry
-account resource IDs. Grants are scoped to those accounts. Existing grants,
-including inherited grants of the same role, are reused.
+**This is an experimental, HTTP-only, single-instance Dedicated-plan setup.**
+[Microsoft documents storage as required for Function Apps](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations).
+The lab has been verified with live streaming, a matching APIM usage report,
+and a full app stop/start, but this does not establish platform support.
+Do not add storage/queue/timer/Durable bindings or assume Consumption, Flex, or
+scale-out support. Revalidate after runtime updates.
 
-To grant access to the backend of an already deployed API, run:
+The HTTP trigger uses anonymous host authorization and validates APIM's private
+`x-proxy-key` in the handler. Host/admin keys remain separate. The usage API
+checks the proxy's dedicated subscription ID, so ordinary client keys, including
+all-APIs keys, cannot submit trusted reports.
+
+The B1 plan incurs charges while retained. Health checks use `/api/healthz`.
+Function execution is limited to ten minutes; upstream reads time out after
+180 seconds of inactivity. The relay accepts requests up to 2 MiB and emits
+keepalive comments every 15 seconds while waiting for upstream data.
+`ENABLE_STREAMING_PROXY=false` keeps SSE forwarding but disables trusted
+streaming accounting. Running Bicep directly requires publishing the Function,
+granting backend access, and supplying its URL/key separately.
+
+## Blocklist behavior
+
+The policy appends these domains only to tools whose type is exactly `web_search`:
+
+```text
+youtube.com, tiktok.com, huggingface.co, facebook.com, x.ai, spotify.com,
+pinterest.com, perplexity.ai, netflix.com, weebly.com, repo.maven.apache.org
+```
+
+Existing entries and their order are preserved; only missing domains are added,
+using case-insensitive comparison. `allowed_domains`, other filters/tools, and
+unrelated request fields remain intact. For example, an existing blocklist of
+`["example.com", "youtube.com"]` keeps those entries and adds the other ten domains.
+Reapplying the policy does not add duplicates.
+
+Missing/null filters and blocklists are initialized. Malformed web-search
+filters or blocklists return HTTP 400. Requests without `web_search` bypass
+validation and rewriting. Preview tool types are unchanged because they do not
+support this filtering contract. Domain filtering controls search sources, not
+arbitrary domain mentions in model output.
+
+Use APIM's portal **Test** tab with tracing and inspect the **Backend request
+body** to verify merging; citations alone do not prove policy behavior.
+
+## Search counts and streaming
+
+The count sums completed `web_search_call` items with `action.type == "search"`:
+
+- Count entries in `action.queries`, including repeated queries.
+- If `queries` is absent/null, count a nonempty `action.query` as one.
+- Exclude `open_page`, `find_in_page`, sources, and citations.
+- Missing/malformed details or unfinished calls make usage unavailable, not zero.
+
+Two queries in one call plus one query in another report three searches. This
+measures activity exposed by the service, not authoritative billing usage.
+
+| Response | Logged count |
+| --- | --- |
+| JSON | Original response: `x-web-search-count`, status `reported` |
+| SSE | Initial response: status `deferred`, no count; separate report: count and status `proxy-reported` |
+| Incomplete accounting | Status `unavailable`, no count |
+
+Both requests return `x-web-search-request-id` for correlation. HTTP headers are
+sent before a stream completes, so the final count cannot be added to the
+original response headers while preserving live delivery.
+
+APIM uses `forward-request buffer-response="false"` and a separate SSE policy
+branch with no response-body references. An early return inside a body-reading
+expression can still cause APIM to buffer. Inherited body logging, response
+validation, or caching may also buffer and should be disabled for this API.
+
+The Function forwards the original bytes and counts only the terminal
+`response.completed`, `response.incomplete`, or `response.failed` snapshot.
+Progress events are not counted again. It retains at most one SSE event (8 MiB);
+exceeding that limit leaves forwarding intact but makes usage unavailable.
+Disconnects before a valid terminal snapshot also report unavailable usage.
+Disconnects after the snapshot preserve the known count.
+
+After forwarding the received events, the Function posts to
+`/<APIM_API_PATH>-usage/reports`. Reporting retries transient failures up to
+three times within 15 seconds. This can delay HTTP EOF, but not model events.
+There is no durable queue: process crashes or sustained reporting failures can
+lose reports. Failed attempts log the request ID/count in the Function log.
+Deduplicate retries by request ID and monitor deferred requests without a report
+after allowing for log ingestion delay.
+
+Notebook section 8 displays early SSE events, search progress, text deltas, and
+a local count for comparison with the APIM record. High reasoning effort may
+delay text even while early events are arriving. The notebook does not submit
+usage reports.
+
+### Log the headers in APIM
+
+Both APIs have Azure Monitor diagnostics with 100% sampling. They log
+`x-web-search-count`, `x-web-search-count-status`, and `x-web-search-request-id`
+from frontend response headers. Frontend/backend body logging is disabled.
+
+APIM must also export **GatewayLogs**. Reuse an existing export or set
+`APIM_LOG_ANALYTICS_WORKSPACE_ID` to an existing workspace resource ID and redeploy.
+This adds the service-wide diagnostic setting `<apiName>-gateway-logs`; it does
+not create a workspace.
+
+Query the resource-specific table, substituting your API names if different:
+
+```kusto
+ApiManagementGatewayLogs
+| where ApiId in ("web-search-blocklist", "web-search-blocklist-usage")
+| extend SearchCountStatus = tostring(ResponseHeaders["x-web-search-count-status"])
+| extend WebSearches = tolong(ResponseHeaders["x-web-search-count"])
+| extend OriginalRequestId = tostring(ResponseHeaders["x-web-search-request-id"])
+| where isnotempty(OriginalRequestId) and SearchCountStatus != "deferred"
+| summarize arg_max(TimeGenerated, *) by OriginalRequestId
+| project TimeGenerated, OriginalRequestId, WebSearches, SearchCountStatus
+```
+
+Exclude unavailable rows from sums and monitor them separately. Existing exports
+using `AzureDiagnostics` need a query adapted to that schema.
+
+## Troubleshooting and local checks
+
+Azure CLI errors include captured Azure error details. On Windows, install Azure
+CLI and restart VS Code/Jupyter if it cannot be found. After editing `src/lab.py`,
+restart the kernel and rerun setup before retrying deployment.
+
+For `PermissionDenied`, check the backend APIM actually uses; it may differ from
+the current `.env`. These helpers inspect it and grant the existing identity
+access without changing routing:
 
 ```python
 from src.lab import get_deployed_backend, grant_deployed_backend_access
@@ -109,120 +231,44 @@ print(get_deployed_backend(config))
 backend_access = grant_deployed_backend_access(config)
 ```
 
-This reads the deployed policy and backend URL. The endpoint in `.env` controls
-the next deployment; editing `.env` does not change an API that is already
-running. `deploy(config, prepared)` grants access to the configured destination
-before applying it. The standalone helper above grants access to the current
-destination and leaves routing unchanged. If `AZURE_OPENAI_RESOURCE_ID(S)` is set
-explicitly, ensure it identifies the accounts used by that destination.
-
-The role change can take a few minutes to propagate. The CLI account must have
-the role-assignment permissions described above; assigning this role does not
-require Microsoft Graph access. Running `main.bicep` directly does not run this
-Python helper, so grant the identity access separately in that case.
-
-The existing APIM backend takes priority over a configured Foundry endpoint or
-key. Preparation fails if the configured backend no longer exists instead of
-silently provisioning a replacement.
-
-Backend routing is resolved as follows. Set `BACKEND_RESPONSES_PATH` explicitly
-for a custom backend path or a backend pool, whose members should use the same
-base path.
-
-| Backend URL ends in | Relative Responses path |
-| --- | --- |
-| Resource hostname only | `/openai/v1/responses` |
-| `/openai` | `/v1/responses` |
-| `/openai/v1` | `/responses` |
-
-## Before and after
-
-Client request:
-
-```json
-{
-  "model": "gpt-4.1",
-  "input": "Find recent Azure API Management announcements.",
-  "tools": [{
-    "type": "web_search",
-    "filters": {
-      "allowed_domains": ["learn.microsoft.com", "azure.microsoft.com"],
-      "blocked_domains": ["example.com", "youtube.com"]
-    }
-  }]
-}
-```
-
-The backend receives the same request with this blocklist. `example.com` is
-preserved, `youtube.com` occurs once, and `allowed_domains` remains intact:
-
-```json
-"blocked_domains": [
-  "example.com", "youtube.com", "tiktok.com", "huggingface.co", "facebook.com",
-  "x.ai", "spotify.com", "pinterest.com", "perplexity.ai", "netflix.com",
-  "weebly.com", "repo.maven.apache.org"
-]
-```
-
-## Verify the gateway behavior
-
-The notebook sends requests with no tools, a web-search tool without filters,
-and a web-search tool with existing blocked domains. Use APIM's portal **Test**
-tab and enable tracing for the `Create a response` operation. Inspect the
-**Backend request body** to verify the merged blocklist and unchanged controls.
-Do not infer successful policy merging solely from response citations: a model
-response does not necessarily echo the request tool configuration.
-
-For HTTP 401 with `PermissionDenied`, inspect the deployed backend using the
-helper above and check APIM's managed identity role on that account. For an
-invalid subscription-key error, check `APIM_SUBSCRIPTION_KEY` and its API scope.
-The request helper includes the Azure error body and request ID in exceptions.
-After changing helper code in a running notebook, reload it before retrying:
-
-```python
-import importlib
-from src import lab
-importlib.reload(lab)
-send_response = lab.send_response
-```
-
-Local checks (from this directory):
+Allow time for role propagation. For subscription-key errors, check the key's
+API scope. Run local checks from this directory:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pip install -r proxy/requirements.txt
+python -m unittest proxy.test_app -v
 az bicep build --file main.bicep --outfile /tmp/web-search-blocklist.json
+az bicep build --file streaming-proxy.bicep --outfile /tmp/web-search-proxy.json
 ```
 
-The policy tests require the .NET 8 SDK and access to NuGet on first run. They
-compile and execute the C# expressions extracted from `policy.xml`, including
-the tool guard, filter validation, and merge. They cover preserved entries,
-case-insensitive duplicate avoidance, repeated application, multiple tools,
-absent tools, preview tools, null values, and malformed filters. They simulate
-the request body interface locally; deployment is still needed to validate
-APIM's policy runtime and the live Foundry service.
+Tests cover early forwarding, counts, disconnects, authentication, and report
+retries. Deployment is required to validate APIM policy execution and log ingestion.
 
 ## Files and cleanup
 
-| File | Purpose |
+| Files | Purpose |
 | --- | --- |
-| [policy.xml](policy.xml) | Conditional validation and additive blocklist merge |
-| [main.bicep](main.bicep) | Dedicated API on existing APIM; optional backend for an existing endpoint |
-| [src/lab.py](src/lab.py) | Environment loading, backend discovery, deployment, HTTP requests |
-| [ai-foundry-web-search-blocklist.ipynb](ai-foundry-web-search-blocklist.ipynb) | Deployment and request walkthrough |
-| [clean-up-resources.ipynb](clean-up-resources.ipynb) | Remove the lab API and any lab-created backend |
+| [main.bicep](main.bicep), [policy.xml](policy.xml) | Client API, blocklist, JSON accounting, and logging |
+| [streaming-proxy.bicep](streaming-proxy.bicep), [streaming-routing.xml](streaming-routing.xml) | Function infrastructure and APIM streaming route |
+| [usage-policy.xml](usage-policy.xml) | Authenticate and log proxy usage reports |
+| [proxy/function_app.py](proxy/function_app.py), [proxy/host.json](proxy/host.json) | Function routes and host settings |
+| [proxy/app.py](proxy/app.py), [proxy/accounting.py](proxy/accounting.py) | Streaming relay, query counting, and reporting |
+| [proxy/requirements.txt](proxy/requirements.txt) | Function runtime dependencies |
+| [src/lab.py](src/lab.py) | Configuration, deployment, and request helpers |
 
-`main.bicep` fills the routing/authentication placeholders in `policy.xml`.
-To adopt just the merge in an existing policy, copy its first inbound `<choose>`
-block after `<base />` and keep your existing backend routing/authentication.
-Place the merge after other policies that construct or replace `tools` so that
-subsequent policies do not undo it.
+Use [clean-up-resources.ipynb](clean-up-resources.ipynb) to preview and delete this
+lab's API, any lab-created backend, proxy, plan, usage API, and reporter
+subscription. It also reads earlier deployment records so old proxy apps and
+storage/network resources can be removed; drain any legacy queued reports first.
+Incremental redeployment alone does not delete those older resources.
 
-Use the cleanup notebook when finished. It removes only this lab's API and,
-when created by this lab, its backend. It does not delete the resource group,
-APIM service, reused backend, Foundry resource, or model deployments. The APIM
-identity and its Foundry role assignments are retained because other APIs may
-share them.
+Cleanup retains the resource group, APIM, reused backend, Foundry/model resources,
+identities/role assignments, deployment records, and shared Azure Monitor settings.
 
-## Reference
+## References
 
-[Microsoft Learn: Web search with the Responses API — domain filtering](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/web-search#domain-filtering)
+- [Responses API web-search domain filtering](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/web-search#domain-filtering)
+- [Foundry Agent Service web search](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/web-search?pivots=python)
+- [Server-sent events in APIM](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events)
+- [Azure Functions storage requirements](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations)
+- [Function key storage settings](https://learn.microsoft.com/en-us/azure/azure-functions/functions-app-settings#azurewebjobssecretstoragetype)

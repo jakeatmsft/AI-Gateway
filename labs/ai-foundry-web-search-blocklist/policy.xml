@@ -1,6 +1,33 @@
 <policies>
     <inbound>
         <base />
+        <!-- Search-capable streams need a separate accounting record after completion.
+             Agent references can hide their tools in the server-side definition. -->
+        <set-variable name="web-search-accounting-required" value="@{
+            if (context.Request.Body == null) { return false; }
+            try
+            {
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                if (body?[&quot;tool_choice&quot;]?.Type == JTokenType.String &amp;&amp; (string)body[&quot;tool_choice&quot;] == &quot;none&quot;)
+                {
+                    return false;
+                }
+                if (body?[&quot;agent&quot;] != null) { return true; }
+                var tools = body?[&quot;tools&quot;] as JArray;
+                if (tools == null) { return false; }
+                foreach (var item in tools)
+                {
+                    var type = (item as JObject)?[&quot;type&quot;];
+                    if (type?.Type == JTokenType.String &amp;&amp;
+                        ((string)type == &quot;web_search&quot; || ((string)type).StartsWith(&quot;web_search_&quot;, StringComparison.Ordinal)))
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            catch (Exception) { return true; }
+        }" />
         <!-- Inspect a preserved copy. Requests without web_search never enter the blocklist branch. -->
         <choose>
             <when condition="@{
@@ -79,6 +106,10 @@
                             <set-header name="Content-Type" exists-action="override">
                                 <value>application/json</value>
                             </set-header>
+                            <set-header name="x-web-search-count" exists-action="delete" />
+                            <set-header name="x-web-search-count-status" exists-action="override">
+                                <value>unavailable</value>
+                            </set-header>
                             <set-body>@{
                                 return new JObject(
                                     new JProperty("error", new JObject(
@@ -149,17 +180,114 @@
         <set-header name="api-key" exists-action="delete" />
         <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
         <set-query-parameter name="subscription-key" exists-action="delete" />
-        {backend-authentication}
-        <set-backend-service backend-id="{backend-id}" />
-        <rewrite-uri template="{backend-responses-path}" copy-unmatched-params="true" />
+        <set-header name="x-web-search-request-id" exists-action="override">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+        <set-variable name="web-search-is-streaming" value="@{
+            try {
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                return body?[&quot;stream&quot;]?.Type == JTokenType.Boolean &amp;&amp; (bool)body[&quot;stream&quot;];
+            } catch (Exception) { return false; }
+        }" />
+        {backend-routing}
     </inbound>
     <backend>
-        <base />
+        <!-- This API owns its single backend call and relays SSE chunks immediately. -->
+        <forward-request timeout="180" buffer-response="false" />
     </backend>
     <outbound>
         <base />
+        <set-header name="x-web-search-request-id" exists-action="override">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+        <!-- Never accept an upstream count as a gateway-computed count. -->
+        <set-header name="x-web-search-count" exists-action="delete" />
+        <!-- Keep body-reading expressions in a separate policy branch. APIM can
+             prefetch a body before evaluating an expression that references it,
+             even when the expression would return early for SSE. -->
+        <choose>
+            <when condition="@(string.Equals(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim(), &quot;text/event-stream&quot;, StringComparison.OrdinalIgnoreCase))">
+                <set-variable name="web-search-count" value="@{
+                    if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode &gt;= 300) { return -1L; }
+                    return (bool)context.Variables[&quot;web-search-accounting-required&quot;] ? -2L : 0L;
+                }" />
+            </when>
+            <otherwise>
+                <set-variable name="web-search-count" value="@{
+                    if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode &gt;= 300)
+                    {
+                        return -1L;
+                    }
+                    var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim();
+                    if (context.Response.Body == null) { return -1L; }
+                    if (!string.Equals(contentType, &quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return -1L;
+                    }
+                    try
+                    {
+                        /* Only JSON responses are inspected. SSE returned before this read. */
+                        var response = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                        var status = (string)response[&quot;status&quot;];
+                        if (status != &quot;completed&quot; &amp;&amp; status != &quot;incomplete&quot; &amp;&amp; status != &quot;failed&quot;) { return -1L; }
+                        var output = response[&quot;output&quot;] as JArray;
+                        if (output == null) { return -1L; }
+                        long total = 0;
+                        foreach (var token in output)
+                        {
+                            var item = token as JObject;
+                            if (item == null) { return -1L; }
+                            if ((string)item[&quot;type&quot;] != &quot;web_search_call&quot;) { continue; }
+                            if ((string)item[&quot;status&quot;] != &quot;completed&quot;) { return -1L; }
+                            var action = item[&quot;action&quot;] as JObject;
+                            if (action == null) { return -1L; }
+                            var actionType = (string)action[&quot;type&quot;];
+                            if (actionType == &quot;open_page&quot; || actionType == &quot;find_in_page&quot;) { continue; }
+                            if (actionType != &quot;search&quot;) { return -1L; }
+                            var queriesToken = action[&quot;queries&quot;];
+                            if (queriesToken != null &amp;&amp; queriesToken.Type != JTokenType.Null)
+                            {
+                                var queries = queriesToken as JArray;
+                                if (queries == null) { return -1L; }
+                                foreach (var query in queries)
+                                {
+                                    if (query.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)query)) { return -1L; }
+                                }
+                                /* query is often also present: it is not an additional search. */
+                                total += queries.Count;
+                            }
+                            else if (action[&quot;query&quot;]?.Type == JTokenType.String &amp;&amp; !string.IsNullOrWhiteSpace((string)action[&quot;query&quot;]))
+                            {
+                                total += 1;
+                            }
+                            else { return -1L; }
+                        }
+                        return total;
+                    }
+                    catch (Exception)
+                    {
+                        /* Accounting must not turn an otherwise valid backend response into a 500. */
+                        return -1L;
+                    }
+                }" />
+            </otherwise>
+        </choose>
+        <set-header name="x-web-search-count-status" exists-action="override">
+            <value>@((long)context.Variables["web-search-count"] == -2 ? "deferred" : ((long)context.Variables["web-search-count"] &gt;= 0 ? "reported" : "unavailable"))</value>
+        </set-header>
+        <choose>
+            <when condition="@((long)context.Variables[&quot;web-search-count&quot;] &gt;= 0)">
+                <set-header name="x-web-search-count" exists-action="override">
+                    <value>@(((long)context.Variables["web-search-count"]).ToString())</value>
+                </set-header>
+            </when>
+        </choose>
     </outbound>
     <on-error>
         <base />
+        <set-header name="x-web-search-count" exists-action="delete" />
+        <set-header name="x-web-search-count-status" exists-action="override">
+            <value>unavailable</value>
+        </set-header>
     </on-error>
 </policies>

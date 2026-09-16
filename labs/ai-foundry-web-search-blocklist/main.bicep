@@ -19,6 +19,14 @@ param apiName string = 'web-search-blocklist'
 
 param apiPath string = 'web-search/openai'
 
+@description('Optional existing Log Analytics workspace resource ID. Omit when APIM already exports GatewayLogs to a destination.')
+param logAnalyticsWorkspaceId string = ''
+
+@description('Streaming proxy origin provisioned and published by deploy(). Empty disables proxy routing.')
+param streamingProxyUrl string = ''
+@secure()
+param streamingProxyKey string = ''
+
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimServiceName
 }
@@ -39,12 +47,22 @@ resource labBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = if (
   }
 }
 
+resource proxyBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = if (!empty(streamingProxyUrl)) {
+  parent: apim
+  name: '${apiName}-streaming-proxy'
+  properties: {
+    protocol: 'http'
+    url: streamingProxyUrl
+    credentials: { header: { 'x-proxy-key': [streamingProxyKey] } }
+  }
+}
+
 resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apim
   name: apiName
   properties: {
     displayName: 'Foundry web-search blocklist'
-    description: 'Append organization blocked domains to Responses API web_search tools.'
+    description: 'Append blocked domains and log the number of reported web searches for JSON and SSE responses.'
     apiType: 'http'
     path: apiPath
     protocols: ['https']
@@ -73,14 +91,77 @@ var backendAuthentication = !empty(backendId) || empty(foundryApiKey)
   ? '<authentication-managed-identity resource="https://ai.azure.com" ignore-error="false" />'
   : ''
 
+var routing = empty(streamingProxyUrl)
+  ? '{backend-authentication}<set-backend-service backend-id="{backend-id}" /><rewrite-uri template="{backend-responses-path}" copy-unmatched-params="true" />'
+  : replace(loadTextContent('streaming-routing.xml'), '{streaming-proxy-backend-id}', proxyBackend.name)
+var routedPolicy = replace(loadTextContent('policy.xml'), '{backend-routing}', routing)
+
 resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
   parent: api
   name: 'policy'
   properties: {
     format: 'rawxml'
-    value: replace(replace(replace(loadTextContent('policy.xml'), '{backend-id}', selectedBackend), '{backend-authentication}', backendAuthentication), '{backend-responses-path}', backendResponsesPath)
+    value: replace(replace(replace(routedPolicy, '{backend-id}', selectedBackend), '{backend-authentication}', backendAuthentication), '{backend-responses-path}', backendResponsesPath)
   }
   dependsOn: [responses]
+}
+
+// The Azure Monitor logger is shared by APIs on this existing service.
+resource monitorLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
+  parent: apim
+  name: 'azuremonitor'
+  properties: {
+    loggerType: 'azureMonitor'
+    isBuffered: false
+  }
+}
+
+// Capture the frontend response: this is where outbound policies add headers.
+// Body logging at either stage would introduce buffering on ordinary SSE calls.
+var noBodyLogging = {
+  headers: []
+  body: { bytes: 0 }
+}
+
+resource apiDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01' = {
+  parent: api
+  name: 'azuremonitor'
+  properties: {
+    loggerId: monitorLogger.id
+    alwaysLog: 'allErrors'
+    sampling: {
+      samplingType: 'fixed'
+      percentage: 100
+    }
+    frontend: {
+      request: noBodyLogging
+      response: {
+        headers: ['x-web-search-count', 'x-web-search-count-status', 'x-web-search-request-id']
+        body: { bytes: 0 }
+      }
+    }
+    backend: {
+      request: noBodyLogging
+      response: noBodyLogging
+    }
+  }
+}
+
+// Azure Monitor export is configured at service scope. Leave existing exports
+// alone unless the caller explicitly supplies a destination for this lab.
+resource gatewayLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
+  scope: apim
+  name: '${apiName}-gateway-logs'
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      {
+        category: 'GatewayLogs'
+        enabled: true
+      }
+    ]
+  }
 }
 
 output apiId string = api.id

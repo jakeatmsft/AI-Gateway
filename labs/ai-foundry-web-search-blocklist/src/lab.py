@@ -4,11 +4,14 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
@@ -60,13 +63,21 @@ def azure_cli_command():
     )
 
 
-def az_json(*args):
+def az_json(*args, redact_values=()):
     """Pass arguments directly to Azure CLI; never interpolate a shell command."""
     result = subprocess.run(
         [*azure_cli_command(), *args, "--only-show-errors", "--output", "json"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=False,
     )
-    return json.loads(result.stdout) if result.stdout.strip() else None
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "Azure CLI returned no error details.").strip()
+        for secret in redact_values:
+            if secret:
+                detail = detail.replace(secret, "<redacted>")
+        # CalledProcessError.__str__ hides stderr and displays command arguments.
+        # Report the Azure error without echoing arguments that may contain keys.
+        raise RuntimeError(f"Azure CLI failed (exit {result.returncode}):\n{detail}")
+    return json.loads(result.stdout.lstrip("\ufeff")) if result.stdout.strip() else None
 
 
 def service_parts(config):
@@ -132,6 +143,7 @@ def prepare_deployment(config):
         "backendResponsesPath": rewrite_path,
         "apiName": api_name,
         "apiPath": api_path,
+        "logAnalyticsWorkspaceId": config.get("APIM_LOG_ANALYTICS_WORKSPACE_ID", ""),
     }
     gateway = config.get("APIM_RESOURCE_GATEWAY_URL") or service["properties"]["gatewayUrl"]
     return {
@@ -245,7 +257,8 @@ def get_deployed_backend(config):
     policy = get(f"{service_id}/apis/{api_name}/policies/policy")
     root = ET.fromstring(policy["properties"]["value"])
     targets = root.findall("./inbound//set-backend-service")
-    backend_ids = {target.get("backend-id") for target in targets}
+    backend_ids = {target.get("backend-id") for target in targets
+                   if target.get("backend-id") != f"{api_name}-streaming-proxy"}
     if len(backend_ids) != 1 or not re.fullmatch(r"[\w.-]+", next(iter(backend_ids)) or ""):
         raise ValueError("This helper requires one static backend-id in the lab API's inbound policy.")
     backend_id = next(iter(backend_ids))
@@ -263,12 +276,116 @@ def grant_deployed_backend_access(config):
     return grant_backend_access(config, prepared)
 
 
+def deploy_streaming_proxy(config, prepared):
+    """Provision/publish the HTTP Function and its direct APIM reporting path."""
+    parameters = prepared["parameters"]
+    upstream = config.get("STREAMING_PROXY_FOUNDRY_RESPONSES_URL")
+    if not upstream:
+        if not prepared["backend_url"]:
+            raise ValueError("Set STREAMING_PROXY_FOUNDRY_RESPONSES_URL for a backend pool.")
+        upstream = prepared["backend_url"].rstrip("/") + parameters["backendResponsesPath"]
+    parsed = urlsplit(upstream)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("The streaming proxy upstream must be an HTTPS Responses URL without credentials or query parameters.")
+    foundry_key = config.get("AZURE_OPENAI_API_KEY", "") if not parameters["backendId"] else ""
+    deployment_name = parameters["apiName"] + "-proxy-function"
+    proxy_key = None
+    try:
+        previous = az_json("deployment", "group", "show", "--subscription", prepared["subscription"],
+                           "--resource-group", prepared["resource_group"], "--name", deployment_name)
+        app_name = (previous["properties"].get("outputs") or {}).get("proxyAppName", {}).get("value")
+        if not app_name:
+            # Failed deployments can omit outputs even though the app exists.
+            # Recover its name from the operations so retries retain its key.
+            app_name = az_json("deployment", "operation", "group", "list",
+                               "--subscription", prepared["subscription"], "--resource-group", prepared["resource_group"],
+                               "--name", deployment_name, "--query",
+                               "[?properties.targetResource.resourceType=='Microsoft.Web/sites'].properties.targetResource.resourceName | [0]")
+        if app_name:
+            settings = az_json("functionapp", "config", "appsettings", "list", "--subscription", prepared["subscription"],
+                               "--resource-group", prepared["resource_group"], "--name", app_name)
+            proxy_key = next((item["value"] for item in settings if item["name"] == "PROXY_API_KEY"), None)
+    except RuntimeError as error:
+        if not any(code in str(error) for code in ("DeploymentNotFound", "ResourceNotFound")):
+            raise
+    proxy_key = proxy_key or secrets.token_urlsafe(32)
+    proxy_parameters = {
+        "apimServiceName": parameters["apimServiceName"], "apiName": parameters["apiName"],
+        "apiPath": parameters["apiPath"], "foundryResponsesUrl": upstream, "foundryApiKey": foundry_key,
+        "proxyApiKey": proxy_key,
+    }
+    if config.get("STREAMING_PROXY_LOCATION"):
+        proxy_parameters["location"] = config["STREAMING_PROXY_LOCATION"]
+    with tempfile.TemporaryDirectory(prefix="web-search-proxy-") as directory:
+        parameter_file = Path(directory) / "params.json"
+        parameter_file.write_text(json.dumps({"parameters": {k: {"value": v} for k, v in proxy_parameters.items()}}))
+        print("Provisioning streaming Function and protected usage API...", flush=True)
+        deployed = az_json(
+            "deployment", "group", "create", "--subscription", prepared["subscription"],
+            "--resource-group", prepared["resource_group"], "--name", deployment_name,
+            "--template-file", str(LAB_DIR / "streaming-proxy.bicep"), "--parameters", "@" + str(parameter_file),
+            redact_values=(foundry_key, proxy_key),
+        )
+        outputs = {key: value["value"] for key, value in deployed["properties"]["outputs"].items()}
+        if not foundry_key:
+            proxy_prepared = {**prepared, "backend_url": upstream}
+            for scope in foundry_resource_ids(config, proxy_prepared):
+                role_subscription = scope.split("/")[2]
+                principal = outputs["proxyPrincipalId"]
+                existing = az_json("role", "assignment", "list", "--subscription", role_subscription,
+                                   "--assignee-object-id", principal, "--scope", scope, "--role", OPENAI_USER_ROLE,
+                                   "--include-inherited", "--fill-principal-name", "false", "--fill-role-definition-name", "false")
+                if not existing:
+                    az_json("role", "assignment", "create", "--subscription", role_subscription,
+                            "--name", str(uuid5(NAMESPACE_URL, f"{scope}/{principal}/{OPENAI_USER_ROLE}".lower())),
+                            "--assignee-object-id", principal, "--assignee-principal-type", "ServicePrincipal",
+                            "--scope", scope, "--role", OPENAI_USER_ROLE)
+        package_path = Path(directory) / "proxy.zip"
+        with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as package:
+            for filename in ("function_app.py", "host.json", "app.py", "accounting.py", "requirements.txt"):
+                package.write(LAB_DIR / "proxy" / filename, filename)
+        print("Publishing the streaming Function (remote Python build)...", flush=True)
+        for attempt in range(3):
+            try:
+                az_json("functionapp", "deployment", "source", "config-zip",
+                        "--subscription", prepared["subscription"], "--resource-group", prepared["resource_group"],
+                        "--name", outputs["proxyAppName"], "--src", str(package_path),
+                        "--timeout", "1200", "--build-remote", "true",
+                        redact_values=(foundry_key, proxy_key))
+                break
+            except RuntimeError as error:
+                if attempt == 2 or "Read timed out" not in str(error):
+                    raise
+                print("Function deployment endpoint is warming up; retrying publication...", flush=True)
+                time.sleep(10)
+    # Reload before probing so an older host cannot answer readiness during a recycle.
+    print("Loading the published package in a fresh Function host...", flush=True)
+    for action in ("stop", "start"):
+        az_json("functionapp", action, "--subscription", prepared["subscription"],
+                "--resource-group", prepared["resource_group"], "--name", outputs["proxyAppName"])
+    for attempt in range(30):
+        try:
+            # Probe the authenticated route without making a model request.
+            ready = requests.post(outputs["proxyUrl"] + "/api/responses",
+                                  headers={"x-proxy-key": proxy_key}, json={}, timeout=10)
+            if ready.status_code == 400 and ready.json().get("error") == "Missing gateway request ID":
+                return outputs, proxy_key
+        except (requests.RequestException, ValueError):
+            pass
+        time.sleep(10)
+    raise RuntimeError("Streaming app is not ready. Inspect App Service deployment/startup logs and retry.")
+
+
 def deploy(config, prepared):
-    """Grant backend access, then deploy the lab API and optional backend on APIM."""
+    """Deploy the streaming proxy first, then switch APIM routing to the ready app."""
     grant_backend_access(config, prepared)
     parameters = dict(prepared["parameters"])
     if not parameters["backendId"]:
         parameters["foundryApiKey"] = config.get("AZURE_OPENAI_API_KEY", "")
+    if config.get("ENABLE_STREAMING_PROXY", "true").lower() not in ("false", "0", "no"):
+        proxy_outputs, proxy_key = deploy_streaming_proxy(config, prepared)
+        parameters["streamingProxyUrl"] = proxy_outputs["proxyUrl"]
+        parameters["streamingProxyKey"] = proxy_key
     document = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0",
@@ -282,6 +399,7 @@ def deploy(config, prepared):
             "deployment", "group", "create", "--subscription", prepared["subscription"],
             "--resource-group", prepared["resource_group"], "--name", parameters["apiName"],
             "--template-file", str(LAB_DIR / "main.bicep"), "--parameters", f"@{parameter_file}",
+            redact_values=(config.get("AZURE_OPENAI_API_KEY"), config.get("APIM_SUBSCRIPTION_KEY"), parameters.get("streamingProxyKey")),
         )
 
 

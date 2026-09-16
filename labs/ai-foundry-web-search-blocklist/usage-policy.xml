@@ -1,0 +1,48 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- Even an ordinary all-APIs subscription must not submit trusted usage. -->
+        <choose>
+            <when condition="@(context.Subscription == null || context.Subscription.Id != &quot;{reporter-subscription-id}&quot;)">
+                <return-response><set-status code="403" reason="Proxy reporting credential required" /></return-response>
+            </when>
+        </choose>
+        <set-variable name="usage-valid" value="@{
+            var id = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-request-id&quot;, &quot;&quot;);
+            var count = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count&quot;, &quot;&quot;);
+            var status = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count-status&quot;, &quot;&quot;);
+            if (!System.Text.RegularExpressions.Regex.IsMatch(id, &quot;^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$&quot;)) { return false; }
+            if (status == &quot;unavailable&quot;) { return count == &quot;&quot;; }
+            return status == &quot;proxy-reported&quot; &amp;&amp; System.Text.RegularExpressions.Regex.IsMatch(count, &quot;^[0-9]{1,18}$&quot;);
+        }" />
+        <choose>
+            <when condition="@(!(bool)context.Variables[&quot;usage-valid&quot;])">
+                <return-response><set-status code="400" reason="Invalid usage report" /></return-response>
+            </when>
+            <when condition="@(context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count-status&quot;, &quot;&quot;) == &quot;proxy-reported&quot;)">
+                <return-response>
+                    <set-status code="204" reason="Usage accepted" />
+                    <set-header name="x-web-search-request-id" exists-action="override">
+                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-request-id", ""))</value>
+                    </set-header>
+                    <set-header name="x-web-search-count" exists-action="override">
+                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-count", ""))</value>
+                    </set-header>
+                    <set-header name="x-web-search-count-status" exists-action="override"><value>proxy-reported</value></set-header>
+                </return-response>
+            </when>
+            <otherwise>
+                <return-response>
+                    <set-status code="204" reason="Unavailable usage recorded" />
+                    <set-header name="x-web-search-request-id" exists-action="override">
+                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-request-id", ""))</value>
+                    </set-header>
+                    <set-header name="x-web-search-count-status" exists-action="override"><value>unavailable</value></set-header>
+                </return-response>
+            </otherwise>
+        </choose>
+    </inbound>
+    <backend><base /></backend>
+    <outbound><base /></outbound>
+    <on-error><base /></on-error>
+</policies>

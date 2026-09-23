@@ -174,3 +174,19 @@ async def test_stream_preserves_multiple_items_parts_and_the_redacted_terminal_r
             text = ''.join(e['delta'] for e in events if e['type'] == 'response.output_text.delta'
                            and e['output_index'] == output_index and e['content_index'] == content_index)
             assert text == part['text']
+
+
+def test_gateway_routes_json_directly_and_preserves_metric_headers():
+    lab = Path(__file__).parents[1]
+    routing = ElementTree.parse(lab / 'streaming-routing.xml')
+    assert routing.find('./when').attrib['condition'] == '@((bool)context.Variables["response-is-streaming"])'
+    assert routing.find('./otherwise/set-backend-service').attrib['backend-id'] == '{backend-id}'
+    policy = ElementTree.parse(lab / 'policy.xml')
+    assert policy.find('.//set-variable[@name="response-inspect-search"]') is None
+    assert policy.find('.//send-request') is None
+    assert policy.find('./outbound//set-body') is None
+    streaming = policy.find('./outbound/choose/when')
+    assert 'text/event-stream' in streaming.attrib['condition']
+    assert 'context.Response.Body' not in ElementTree.tostring(streaming, encoding='unicode')
+    assert policy.find('./outbound/choose/otherwise/set-header[@name="x-response-metrics"]') is not None
+    assert policy.find('./outbound/choose/otherwise/set-header[@name="x-response-metrics-status"]') is not None

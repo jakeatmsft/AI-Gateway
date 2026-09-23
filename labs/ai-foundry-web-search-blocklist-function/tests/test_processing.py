@@ -176,21 +176,23 @@ async def test_stream_preserves_multiple_items_parts_and_the_redacted_terminal_r
             assert text == part['text']
 
 
-def test_apim_streams_through_relay_and_inspects_only_json_for_conditional_redaction():
+def test_apim_routes_only_search_sse_to_function_and_keeps_json_metrics():
     policy = ElementTree.parse(Path(__file__).parents[1] / 'policy.xml')
-    detection = policy.find('.//set-variable[@name="usedWebSearch"]').attrib['value']
-    assert '"web_search_call"' in detection
-    assert '"completed"' not in detection
-    branches = policy.findall('./inbound/choose/when/choose/when')
-    bypass = next(branch for branch in branches if 'usedWebSearch' in branch.attrib.get('condition', ''))
-    assert '!(bool)' in bypass.attrib['condition']
-    assert bypass.find('return-response').attrib['response-variable-name'] == 'initial'
-    assert policy.find('.//rewrite-uri[@template="/api/redact"]') is not None
-    assert policy.find('.//set-backend-service[@base-url="{foundry-endpoint}"]') is not None
+    assert policy.find('.//send-request') is None
+    assert policy.find('.//rewrite-uri[@template="/api/redact"]') is None
     relay = next(branch for branch in policy.findall('./inbound/choose/when')
                  if branch.find('rewrite-uri[@template="/api/responses"]') is not None)
-    assert 'isStreaming' in relay.attrib['condition'] and 'hasWebSearch' in relay.attrib['condition']
-    assert relay.find('send-request') is None
+    assert relay.attrib['condition'] == '@((bool)context.Variables["hasWebSearch"] && (bool)context.Variables["isStreaming"])'
+    fallback = policy.find('./inbound/choose/otherwise')
+    assert fallback.find('set-backend-service').attrib['base-url'] == '{foundry-endpoint}'
+    assert fallback.find('rewrite-uri').attrib['template'] == '/responses'
     assert policy.find('./backend/forward-request').attrib['buffer-response'] == 'false'
-    parser = policy.find('.//set-variable[@name="initialResponse"]').attrib['value']
-    assert 'application/json' in parser and 'text/event-stream' not in parser
+    outbound = policy.find('./outbound')
+    assert outbound.find('.//set-body') is None
+    streaming = outbound.find('./choose/when')
+    assert 'text/event-stream' in streaming.attrib['condition']
+    assert 'context.Response.Body' not in ElementTree.tostring(streaming, encoding='unicode')
+    metrics = outbound.find('./choose/otherwise/set-variable[@name="response-metrics"]').attrib['value']
+    assert 'preserveContent: true' in metrics and 'total_tokens' in metrics
+    assert outbound.find('.//set-header[@name="x-response-metrics"][@exists-action="override"]') is not None
+    assert outbound.find('.//set-header[@name="x-response-metrics-status"][@exists-action="override"]') is not None

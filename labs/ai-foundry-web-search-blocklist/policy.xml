@@ -155,21 +155,6 @@
                 return body?[&quot;stream&quot;]?.Type == JTokenType.Boolean &amp;&amp; (bool)body[&quot;stream&quot;];
             } catch (Exception) { return false; }
         }" />
-        <!-- The proxy inspects completed search-capable responses before deciding
-             whether to invoke /api/redact. Stored context can also contain tools. -->
-        <set-variable name="response-inspect-search" value="@{
-            try {
-                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
-                if (body?[&quot;previous_response_id&quot;] != null || body?[&quot;conversation&quot;] != null || body?[&quot;prompt&quot;] != null) { return true; }
-                var tools = body?[&quot;tools&quot;] as JArray;
-                if (tools == null) { return false; }
-                foreach (var item in tools) {
-                    var type = (string)item?[&quot;type&quot;];
-                    if (type == &quot;web_search&quot; || type == &quot;web_search_preview&quot; || type == &quot;web_search_preview_2025_03_11&quot;) { return true; }
-                }
-                return false;
-            } catch (Exception) { return false; }
-        }" />
         {backend-routing}
     </inbound>
     <backend>
@@ -196,6 +181,8 @@
                 </set-header>
             </when>
             <otherwise>
+                <!-- JSON goes directly to Foundry; inspect usage without rewriting the response. -->
+                <set-header name="x-response-redaction" exists-action="override"><value>skipped</value></set-header>
                 <set-variable name="web-search-count" value="@{
                     if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode &gt;= 300)
                     {

@@ -111,103 +111,6 @@
         <rewrite-uri template="/api/responses" copy-unmatched-params="false" />
         <authentication-managed-identity resource="api://{function-client-id}" />
       </when>
-      <when condition='@((bool)context.Variables["hasWebSearch"])'>
-        <!-- JSON only: inspect the completed response before selecting the redactor. -->
-        <send-request mode="new" response-variable-name="initial" timeout="180" ignore-error="true">
-          <set-url>{foundry-endpoint}/responses</set-url>
-          <set-method>POST</set-method>
-          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-          <set-header name="Accept-Encoding" exists-action="override"><value>identity</value></set-header>
-          <set-body>@((string)context.Variables["upstreamRequest"])</set-body>
-          <authentication-managed-identity resource="https://ai.azure.com" />
-        </send-request>
-        <choose>
-          <when condition='@(context.Variables["initial"] == null)'>
-            <return-response>
-              <set-status code="504" reason="Gateway Timeout" />
-              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-              <set-body>{"error":{"code":"initial_upstream_unavailable","message":"Initial Foundry request timed out or could not connect"}}</set-body>
-            </return-response>
-          </when>
-          <when condition='@(((IResponse)context.Variables["initial"]).StatusCode &gt;= 400)'>
-            <return-response response-variable-name="initial" />
-          </when>
-        </choose>
-        <set-variable name="initialBody" value='@(((IResponse)context.Variables["initial"]).Body.As&lt;string&gt;(preserveContent: true))' />
-        <choose>
-          <when condition='@(System.Text.Encoding.UTF8.GetByteCount((string)context.Variables["initialBody"]) &gt; 1048576)'>
-            <return-response>
-              <set-status code="502" reason="Bad Gateway" />
-              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-              <set-body>{"error":{"code":"initial_response_too_large","message":"Initial response exceeds the lab 1 MiB limit"}}</set-body>
-            </return-response>
-          </when>
-        </choose>
-        <set-variable name="initialResponse" value='@{
-          try {
-            var raw = (string)context.Variables["initialBody"];
-            var contentType = ((IResponse)context.Variables["initial"]).Headers.GetValueOrDefault("Content-Type", "");
-            if (!contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)) { return ""; }
-            return Newtonsoft.Json.Linq.JObject.Parse(raw).ToString(Newtonsoft.Json.Formatting.None);
-          } catch { return ""; }
-        }' />
-        <choose>
-          <when condition='@(string.IsNullOrEmpty((string)context.Variables["initialResponse"]))'>
-            <return-response>
-              <set-status code="502" reason="Bad Gateway" />
-              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-              <set-body>{"error":{"code":"invalid_json_response","message":"Foundry returned malformed JSON"}}</set-body>
-            </return-response>
-          </when>
-        </choose>
-        <set-variable name="initialMetrics" value='@{
-          var response = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"]);
-          var metrics = new Newtonsoft.Json.Linq.JObject();
-          var count = response.SelectToken("tool_usage.web_search.num_requests");
-          var tokens = response.SelectToken("usage.total_tokens");
-          metrics["web_search_count"] = count != null &amp;&amp; count.Type == Newtonsoft.Json.Linq.JTokenType.Integer &amp;&amp; (decimal)count &gt;= 0 &amp;&amp; (decimal)count &lt;= 1000000000000000000m ? count.DeepClone() : Newtonsoft.Json.Linq.JValue.CreateNull();
-          metrics["total_tokens"] = tokens != null &amp;&amp; tokens.Type == Newtonsoft.Json.Linq.JTokenType.Integer &amp;&amp; (decimal)tokens &gt;= 0 &amp;&amp; (decimal)tokens &lt;= 1000000000000000000m ? tokens.DeepClone() : Newtonsoft.Json.Linq.JValue.CreateNull();
-          return metrics.ToString(Newtonsoft.Json.Formatting.None);
-        }' />
-        <set-variable name="usedWebSearch" value='@{
-          var response = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"]);
-          var output = response["output"] as Newtonsoft.Json.Linq.JArray;
-          if (output == null) { return false; }
-          foreach (var item in output) {
-            if (item is Newtonsoft.Json.Linq.JObject &amp;&amp; (string)item["type"] == "web_search_call") { return true; }
-          }
-          return false;
-        }' />
-        <choose>
-          <when condition='@(!(bool)context.Variables["usedWebSearch"])'>
-            <!-- A tool declaration is not proof that the model used the tool.
-                 Preserve original JSON when no web_search_call is present. -->
-            <return-response response-variable-name="initial">
-              <set-header name="x-lab-route" exists-action="override"><value>foundry-buffered</value></set-header>
-              <set-header name="x-lab-initial-buffered" exists-action="override"><value>true</value></set-header>
-              <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
-              <set-header name="x-response-metrics" exists-action="override"><value>@((string)context.Variables["initialMetrics"])</value></set-header>
-              <set-header name="x-response-metrics-status" exists-action="override"><value>@{
-                var metrics = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialMetrics"]);
-                var known = metrics.Properties().Count(p =&gt; p.Value.Type != Newtonsoft.Json.Linq.JTokenType.Null);
-                return known == 2 ? "reported" : known == 1 ? "partial" : "unavailable";
-              }</value></set-header>
-            </return-response>
-          </when>
-        </choose>
-        <set-variable name="route" value="function" />
-        <set-body>@{
-          var original = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["originalRequest"]);
-          return new Newtonsoft.Json.Linq.JObject(
-            new Newtonsoft.Json.Linq.JProperty("response", Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"])),
-            new Newtonsoft.Json.Linq.JProperty("blocked_domains", Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables["effectiveDomains"])),
-            new Newtonsoft.Json.Linq.JProperty("stream", (bool?)original["stream"] ?? false)
-          ).ToString(Newtonsoft.Json.Formatting.None);
-        }</set-body>
-        <set-backend-service base-url="{function-endpoint}" />
-        <rewrite-uri template="/api/redact" copy-unmatched-params="false" />
-        <authentication-managed-identity resource="api://{function-client-id}" />
-      </when>
       <otherwise>
         <set-body>@((string)context.Variables["upstreamRequest"])</set-body>
         <set-backend-service base-url="{foundry-endpoint}" />
@@ -234,11 +137,90 @@
     <!-- Do not read or rewrite SSE bodies here. -->
     <set-header name="x-lab-route" exists-action="override"><value>@((string)context.Variables["route"])</value></set-header>
     <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
-    <set-header name="x-lab-initial-buffered" exists-action="override"><value>@(((bool)context.Variables["hasWebSearch"] &amp;&amp; !(bool)context.Variables["isStreaming"]).ToString().ToLowerInvariant())</value></set-header>
+    <set-header name="x-lab-initial-buffered" exists-action="override"><value>false</value></set-header>
+    <set-header name="x-response-metrics" exists-action="delete" />
+    <set-header name="x-response-metrics-status" exists-action="delete" />
+    <!-- Keep all body reads outside the SSE branch: even a guarded body expression can prefetch SSE. -->
     <choose>
-      <when condition='@((string)context.Variables["route"] == "function")'>
-        <set-header name="x-lab-initial-response-id" exists-action="override"><value>@((string)Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"])["id"])</value></set-header>
+      <when condition='@(string.Equals(context.Response.Headers.GetValueOrDefault("Content-Type", "").Split(&apos;;&apos;)[0].Trim(), "text/event-stream", StringComparison.OrdinalIgnoreCase))'>
+        <set-header name="x-response-metrics-status" exists-action="override">
+          <value>@(context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300 ? "streamed" : "unavailable")</value>
+        </set-header>
       </when>
+      <otherwise>
+        <set-header name="x-lab-filter" exists-action="override"><value>skipped</value></set-header>
+        <set-variable name="web-search-count" value="@{
+            if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode &gt;= 300)
+            {
+                return -1L;
+            }
+            var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(&apos;;&apos;)[0].Trim();
+            if (context.Response.Body == null) { return -1L; }
+            if (!string.Equals(contentType, &quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))
+            {
+                return -1L;
+            }
+            try
+            {
+                /* Read the service-reported count only in the non-SSE branch. */
+                var response = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                var toolUsage = response[&quot;tool_usage&quot;] as JObject;
+                var webSearch = toolUsage?[&quot;web_search&quot;] as JObject;
+                var count = webSearch?[&quot;num_requests&quot;];
+                if (count?.Type != JTokenType.Integer) { return -1L; }
+                var total = (long)count;
+                return total &gt;= 0 &amp;&amp; total &lt;= 1000000000000000000L ? total : -1L;
+            }
+            catch (Exception)
+            {
+                /* Accounting must not turn an otherwise valid backend response into a 500. */
+                return -1L;
+            }
+        }" />
+        <!-- Match the current proxy registry: web_search_count and total_tokens.
+             Keep JSON body reads inside this non-SSE branch. -->
+        <set-variable name="response-metrics" value="@{
+            var metrics = new JObject(
+                new JProperty(&quot;web_search_count&quot;, JValue.CreateNull()),
+                new JProperty(&quot;total_tokens&quot;, JValue.CreateNull()));
+            var count = (long)context.Variables[&quot;web-search-count&quot;];
+            if (count &gt;= 0) { metrics[&quot;web_search_count&quot;] = count; }
+            var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(&apos;;&apos;)[0].Trim();
+            if (context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300
+                &amp;&amp; string.Equals(contentType, &quot;application/json&quot;, StringComparison.OrdinalIgnoreCase)
+                &amp;&amp; context.Response.Body != null)
+            {
+                try
+                {
+                    var response = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                    var tokens = response?[&quot;usage&quot;]?[&quot;total_tokens&quot;];
+                    if (tokens?.Type == JTokenType.Integer)
+                    {
+                        var total = (long)tokens;
+                        if (total &gt;= 0 &amp;&amp; total &lt;= 1000000000000000000L)
+                        {
+                            metrics[&quot;total_tokens&quot;] = total;
+                        }
+                    }
+                }
+                catch (Exception) { /* Missing usage must not discard a known search count. */ }
+            }
+            return metrics.ToString(Newtonsoft.Json.Formatting.None);
+        }" />
+        <set-header name="x-response-metrics" exists-action="override">
+            <value>@((string)context.Variables["response-metrics"])</value>
+        </set-header>
+        <set-header name="x-response-metrics-status" exists-action="override">
+            <value>@{
+                var metrics = JObject.Parse((string)context.Variables["response-metrics"]);
+                var available = 0;
+                foreach (var metric in metrics.Properties()) {
+                    if (metric.Value.Type != JTokenType.Null) { available++; }
+                }
+                return available == 0 ? "unavailable" : (available == metrics.Count ? "reported" : "partial");
+            }</value>
+        </set-header>
+      </otherwise>
     </choose>
   </outbound>
   <on-error>

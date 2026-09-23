@@ -1,12 +1,13 @@
 # Foundry web-search blocklist and search accounting with API Management
 
 This lab appends organization domains to `tools[].filters.blocked_domains`, then
-replaces blocked URLs with `[BLOCKED LINK]` in responses that actually invoke web search. A separate
+replaces blocked URLs with `[BLOCKED LINK]` in SSE responses that actually invoke web search. A separate
 `/api/redact` Azure Function applies regex matching to URL hostnames:
 `https://youtube.com/watch?v=1` becomes `[BLOCKED LINK]`.
 Blocked URL paths, queries, and fragments are removed along with the hostname.
 Allowed URLs, prose, whitespace, link labels, and surrounding markup stay intact.
-JSON and streaming responses retain the original response IDs and usage.
+JSON requests go directly from APIM to Foundry, with usage reported in response headers.
+Their response bodies remain unchanged. Streaming responses retain the original response IDs and usage.
 
 ## Architecture
 
@@ -19,15 +20,15 @@ flowchart TB
     API["Existing APIM · Responses API<br/>Merge blocked_domains and route"]
     Usage["Existing APIM · Protected usage API"]
     subgraph Functions["Function App · Linux B1"]
-        Proxy["/api/responses<br/>Live SSE relay or JSON inspection"]
+        Proxy["/api/responses<br/>Live SSE relay"]
         Redactor["/api/redact<br/>Regex URL replacement<br/>Blocked URL → [BLOCKED LINK]"]
     end
     Foundry["Existing Foundry<br/>Responses API and hosted web search"]
     Logs["Azure Monitor / Log Analytics"]
 
     Client <-->|"APIM subscription key"| API
-    API <-->|"JSON without search capability<br/>APIM identity"| Foundry
-    API <-->|"Search-capable JSON or any SSE<br/>Private x-proxy-key"| Proxy
+    API <-->|"All JSON requests<br/>APIM identity"| Foundry
+    API <-->|"All SSE requests<br/>Private x-proxy-key"| Proxy
     Proxy <-->|"Function identity"| Foundry
     Proxy <-->|"Only after web_search_call<br/>Private x-proxy-key"| Redactor
     Proxy -.->|"SSE metrics and request ID<br/>Dedicated reporter key"| Usage
@@ -36,7 +37,8 @@ flowchart TB
 ```
 
 Routing depends on both the request's search capability and its response mode.
-JSON redaction requires a completed response containing `web_search_call`.
+JSON always bypasses both Function routes. APIM reads usage with `preserveContent: true`
+and adds metric headers without rewriting the body.
 SSE redaction starts when an actual search invocation event is observed.
 
 ```mermaid
@@ -66,22 +68,11 @@ sequenceDiagram
         Note over Proxy,Redactor: Hold at most one text delta for its partner<br/>Flush unmatched delta before non-text or terminal event
         Proxy->>Usage: Separate final metrics report
         Usage-->>Proxy: Report accepted
-    else Search-capable JSON request
-        APIM->>Proxy: JSON request + private credential + request ID
-        Proxy->>Foundry: Model request
-        Foundry-->>Proxy: Complete JSON response
-        alt output contains web_search_call
-            Proxy->>Redactor: Response + merged blocklist
-            Redactor-->>Proxy: JSON with blocked URLs replaced by [BLOCKED LINK]
-        else Search was not invoked
-            Note over Proxy: Keep original response bytes
-        end
-        Proxy-->>APIM: JSON response
-        APIM-->>Client: JSON with metrics and correlation headers
-    else JSON without search capability
-        APIM->>Foundry: Model request
-        Foundry-->>APIM: JSON response
-        APIM-->>Client: JSON with metrics and correlation headers
+    else Any JSON request, including web search
+        APIM->>Foundry: Model request with merged blocklist
+        Foundry-->>APIM: Original JSON response
+        APIM->>APIM: Read usage and preserve response body
+        APIM-->>Client: Original JSON with metrics and correlation headers
     end
 ```
 
@@ -90,10 +81,10 @@ Only the regex function is conditional on an actual `web_search_call` output ite
 or SSE search-progress event; a declaration or usage counter does not trigger it. It performs no model or network
 calls. Both routes validate the private `x-proxy-key` credential.
 
-JSON requests without search tools or stored context go directly to Foundry.
+All JSON requests, including actual web searches, go directly to Foundry.
 All streaming requests use the live metrics relay. Search-capable streams
 (including preview tools or stored context) call the regex Function for each
-event once search is observed. JSON search responses are inspected in full.
+event once search is observed. JSON usage is inspected only in APIM; JSON links are not redacted.
 The redactor also checks the actual invocation defensively. The existing APIM service, Foundry
 account/model, and Log Analytics workspace are reused.
 
@@ -245,9 +236,9 @@ A malformed/truncated frame or redactor failure ends the stream with an SSE
 error. Already-delivered events cannot be recalled; clients must require
 `response.completed`. The stream starts with `x-response-buffered: false` and
 `x-response-redaction: conditional` for search-capable requests (`skipped` otherwise).
-These headers are sent before the eventual invocation is known. JSON responses
-use `x-response-buffered: true` and `x-response-redaction: regex|skipped`; their
-buffer is limited to 16 MiB and their redaction envelope to 2 MB.
+These headers are sent before the eventual invocation is known. JSON responses use
+`x-response-redaction: skipped`. APIM reads JSON usage to build `x-response-metrics`
+and preserves the original body; the Function redaction-envelope limit does not apply.
 
 Use APIM's portal **Test** tab with tracing and inspect the **Backend request
 body** to verify merging; citations alone do not prove policy behavior.

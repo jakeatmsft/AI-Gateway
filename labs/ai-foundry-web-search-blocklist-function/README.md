@@ -6,8 +6,9 @@ response inspection and protected Function pattern from
 [responses-web-search-function](../responses-web-search-function/).
 
 The **`/api/redact` Azure Function runs only after an actual `web_search_call`
-output item or SSE search-progress event**. APIM invokes it for JSON; a live
-`/api/responses` relay invokes it for pairs of text deltas and single non-text SSE events. The Function matches URL hostnames
+output item or search-progress event in SSE**. A live `/api/responses` relay invokes
+it for pairs of text deltas and single non-text SSE events. All non-streaming
+requests go directly from APIM to Foundry and retain the original response body. The Function matches URL hostnames
 against an escaped blocklist regex and replaces the entire matching URL with `[BLOCKED LINK]`.
 It performs no model calls or other network requests.
 
@@ -18,7 +19,8 @@ https://youtube.com/watch?v=123
 
 Replacement removes the URL scheme, host, port, path, query, and fragment.
 Link labels, markup, punctuation, spacing, and surrounding text stay intact.
-All domains outside the blocklist remain allowed. Both JSON and SSE are supported.
+All domains outside the blocklist remain allowed. JSON keeps the hosted-search
+request blocklist and metric headers; regex response redaction applies only to SSE.
 
 ## Architecture and routing
 
@@ -46,7 +48,7 @@ flowchart TB
 
     Client <-->|"Entra access token"| APIM
     APIM <-->|"JSON or no-search SSE<br/>APIM managed identity"| Foundry
-    APIM <-->|"Search SSE or searched JSON<br/>APIM managed identity"| Function
+    APIM <-->|"Search SSE only<br/>APIM managed identity"| Function
     Function <-->|"Search-enabled SSE<br/>Function managed identity"| Foundry
     APIM -.->|"JSON metrics and correlation headers"| Logs
     Function -->|"Host storage access<br/>Function managed identity"| Integration
@@ -56,8 +58,8 @@ flowchart TB
     DNS -.->|"Blob hostname resolves to private IP"| Endpoint
 ```
 
-APIM inspects complete search-enabled JSON responses before choosing the regex
-route. SSE is never materialized in APIM: search-enabled SSE uses the live relay,
+APIM reads usage from JSON responses and sets metric headers without rewriting
+the body or calling a Function. SSE is never materialized in APIM: search-enabled SSE uses the live relay,
 and requests without a search tool stream directly from Foundry.
 
 ```mermaid
@@ -84,26 +86,19 @@ sequenceDiagram
             G-->>C: Live SSE (route=stream-function)
         end
         Note over R,F: Hold at most one text delta for its partner<br/>No carry-over between pairs
-    else Search-enabled JSON
-        G->>M: One model request, APIM managed identity
-        M-->>G: Complete JSON response
-        alt output contains web_search_call
-            G->>F: Response + blocklist, APIM identity
-            F-->>G: JSON with blocked URLs replaced by [BLOCKED LINK]
-            G-->>C: JSON and original metrics (route=function)
-        else Tool was unused
-            G-->>C: Original JSON (route=foundry-buffered)
-        end
-    else No search tool offered
-        G->>M: Model request, APIM managed identity
+    else Any JSON request or no search tool offered
+        G->>M: One model request with APIM managed identity
         M-->>G: JSON or live SSE events
-        G-->>C: Direct response (route=foundry)
+        opt JSON response
+            G->>G: Read usage and preserve response body
+        end
+        G-->>C: Direct response and JSON metric headers (route=foundry)
     end
 ```
 
 A tool declaration, `tool_choice`, a prompt mentioning search, or a usage counter
-is not enough to trigger the regex Function. JSON requires an output item whose
-`type` is `web_search_call`; SSE also recognizes actual search-progress events.
+is not enough to trigger the regex Function. Only SSE is eligible, and it requires
+a `web_search_call` output item or actual search-progress event.
 The redactor independently checks the invocation evidence. An unused search tool
 still uses the SSE relay, but never calls `/api/redact`.
 
@@ -152,7 +147,7 @@ and structured URL fields. It matches IDNA names and common percent/HTML-encoded
 hostnames while preserving allowed URLs exactly. Request blocklists should
 use DNS hostnames or punycode, without schemes, ports, paths, or regex syntax.
 
-Redaction applies to response string values, including answer text, citation
+In SSE, redaction applies to response string values, including answer text, citation
 URLs, and hosted-search source URLs. Response IDs, output items, usage, and
 metadata remain present. Citation offsets are adjusted for any change in text length after URL replacement.
 No LLM rewrites the answer, and there is no second model request.
@@ -202,19 +197,30 @@ the client. Require `response.completed`; HTTP 200 alone does not prove completi
 
 ## Metrics and authentication
 
-Search-enabled JSON responses expose `x-response-metrics` (`web_search_count`,
+All JSON responses expose `x-response-metrics` (`web_search_count`,
 `total_tokens`) and `x-response-metrics-status`. For SSE, final usage arrives in
 `response.completed`; headers cannot contain values that are not yet known.
 The relay sets `x-response-metrics-status: streamed`. Search counts come from
 `tool_usage.web_search.num_requests`; original token usage and response IDs remain
 unchanged. No separate usage-reporting API is required in this lab.
 
-`x-lab-route` identifies `foundry`, `foundry-buffered`, `function`, or
-`stream-function`. All SSE routes use `x-lab-initial-buffered: false`.
+`x-lab-route` is `foundry` for every JSON response and for no-tool SSE, or
+`stream-function` for search-enabled SSE. `x-lab-initial-buffered: false` means
+there is no separate initial request stage. APIM still reads a preserved JSON
+body to extract metrics. It sets `x-lab-filter: skipped` for JSON.
 The SSE relay sets `x-lab-filter: conditional-regex` before it knows whether search
-will run; observe search events to determine invocation. JSON redaction uses
-`x-lab-filter: regex-redaction` and retains `x-lab-initial-response-id`.
-APIM adds `x-response-request-id` for correlation.
+will run; observe search events to determine invocation. APIM adds
+`x-response-request-id` for correlation.
+
+The same metric map is used for JSON and the terminal SSE usage comparison:
+
+```text
+x-response-metrics: {"web_search_count":3,"total_tokens":120}
+x-response-metrics-status: reported
+```
+
+Unavailable values are `null`; status is `reported`, `partial`, or `unavailable`.
+JSON bodies, IDs, citations, and links are returned as supplied by Foundry.
 
 APIM diagnostics log JSON metrics and correlation/filter headers without body
 logging. Set `LAB_LOG_ANALYTICS_WORKSPACE_ID` to export GatewayLogs to an existing
@@ -278,7 +284,8 @@ or Easy Auth; deployment is required for those checks.
 
 This is a stateless text lab: no conversations, previous response IDs, background
 mode, or custom/preview tools. APIM limits request bodies to 64 KiB, model output
-to 4096 tokens, and buffered initial JSON to 1 MiB after materialization.
+to 4096 tokens. JSON metric extraction materializes the body in APIM using
+`preserveContent: true`; it does not apply the Function redaction-envelope limit.
 Individual SSE frames and redaction envelopes are limited to 2 MB. APIM uses 180-second upstream timeouts.
 Long research responses can exceed these limits. `store=false` means the original
 response ID is retained for correlation, not server-side retrieval.

@@ -1,5 +1,5 @@
 <choose>
-    <when condition="@((bool)context.Variables[&quot;web-search-is-streaming&quot;])">
+    <when condition="@((bool)context.Variables[&quot;response-is-streaming&quot;] || (bool)context.Variables[&quot;response-inspect-search&quot;])">
         <set-header name="Authorization" exists-action="delete" />
         <set-header name="x-proxy-key" exists-action="delete" />
         <set-backend-service backend-id="{streaming-proxy-backend-id}" />

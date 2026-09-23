@@ -1,43 +1,43 @@
 """Bounded, incremental SSE accounting. No response bytes are rewritten."""
 
 import json
+import math
+import re
+
+try:
+    from .metrics import METRIC_EXTRACTORS, TERMINAL_EVENTS
+except ImportError:  # Function deployment places these files at its root.
+    from metrics import METRIC_EXTRACTORS, TERMINAL_EVENTS
 
 
-def count_searches(response):
-    if not isinstance(response, dict) or response.get("status") not in ("completed", "incomplete", "failed"):
-        return None
-    output = response.get("output")
-    if not isinstance(output, list):
-        return None
-    total = 0
-    for item in output:
-        if not isinstance(item, dict):
-            return None
-        if item.get("type") != "web_search_call":
-            continue
-        if item.get("status") != "completed" or not isinstance(item.get("action"), dict):
-            return None
-        action = item["action"]
-        if action.get("type") in ("open_page", "find_in_page"):
-            continue
-        if action.get("type") != "search":
-            return None
-        queries = action.get("queries")
-        if queries is not None:
-            if not isinstance(queries, list) or any(not isinstance(q, str) or not q.strip() for q in queries):
-                return None
-            total += len(queries)
-        elif isinstance(action.get("query"), str) and action["query"].strip():
-            total += 1
-        else:
-            return None
-    return total
+def valid_value(value):
+    return type(value) in (int, float) and abs(value) <= 10**18 and math.isfinite(value)
 
 
-class SearchMeter:
-    """Retain at most one SSE event; count only a terminal response snapshot."""
+def serialize_metrics(metrics):
+    """Match the numeric map accepted by usage-policy.xml; never emit NaN/Infinity."""
+    if not isinstance(metrics, dict) or not 1 <= len(metrics) <= 32:
+        raise ValueError("A report requires 1–32 metrics.")
+    for name, value in metrics.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            raise ValueError("Metric names must match [a-z][a-z0-9_]{0,63}.")
+        if value is not None and not valid_value(value):
+            raise ValueError("Metric values must be finite numbers within ±1e18, or null.")
+    encoded = json.dumps(metrics, separators=(",", ":"), allow_nan=False)
+    if len(encoded) > 4096:
+        raise ValueError("Metrics header exceeds 4096 bytes.")
+    return encoded
 
-    def __init__(self, max_event_bytes=8 * 1024 * 1024):
+
+class ResponseMetrics:
+    """Retain at most one SSE event and extract a named set of terminal metrics."""
+
+    def __init__(self, extractors=None, terminal_events=None, max_event_bytes=8 * 1024 * 1024):
+        self.extractors = dict(METRIC_EXTRACTORS if extractors is None else extractors)
+        self.terminal_events = TERMINAL_EVENTS if terminal_events is None else frozenset(terminal_events)
+        serialize_metrics(self.unavailable())  # Validate the registry before processing events.
+        if not all(callable(extract) for extract in self.extractors.values()):
+            raise ValueError("Metric extractors must be callable.")
         self.limit = max_event_bytes
         self.pending = bytearray()
         self.data = []
@@ -45,7 +45,7 @@ class SearchMeter:
         self.first_line = True
         self.invalid = False
         self.terminal = False
-        self.count = None
+        self.values = self.unavailable()
 
     def feed(self, chunk):
         if self.invalid:
@@ -86,10 +86,10 @@ class SearchMeter:
                     return
                 try:
                     event = json.loads(payload)
-                    if event.get("type") in ("response.completed", "response.incomplete", "response.failed"):
+                    if event.get("type") in self.terminal_events:
                         self.terminal = True
-                        self.count = count_searches(event.get("response"))
-                except (ValueError, AttributeError):
+                        self.values = self.extract(event)
+                except (ValueError, AttributeError, TypeError, RecursionError):
                     self.invalid = True
         elif line.startswith(b"data:"):
             value = line[5:].removeprefix(b" ")
@@ -103,5 +103,20 @@ class SearchMeter:
         if self.pending.endswith(b"\r"):
             self.feed(b"\n")
         if self.pending or self.data or self.invalid or not self.terminal:
-            return None
-        return self.count
+            return self.unavailable()
+        return dict(self.values)
+
+    def unavailable(self):
+        return dict.fromkeys(self.extractors)
+
+    def extract(self, event):
+        """A failed extractor invalidates only its own metric, never the stream."""
+        values = self.unavailable()
+        for name, extract in self.extractors.items():
+            try:
+                value = extract(event)
+                if valid_value(value):
+                    values[name] = value
+            except Exception:
+                pass  # Do not log event data or potentially sensitive exception details.
+        return values

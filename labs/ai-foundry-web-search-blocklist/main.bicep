@@ -62,7 +62,7 @@ resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   name: apiName
   properties: {
     displayName: 'Foundry web-search blocklist'
-    description: 'Append blocked domains and log the number of reported web searches for JSON and SSE responses.'
+    description: 'Append blocked domains, redact matching URLs after actual web search, and log JSON and streaming metrics.'
     apiType: 'http'
     path: apiPath
     protocols: ['https']
@@ -94,7 +94,8 @@ var backendAuthentication = !empty(backendId) || empty(foundryApiKey)
 var routing = empty(streamingProxyUrl)
   ? '{backend-authentication}<set-backend-service backend-id="{backend-id}" /><rewrite-uri template="{backend-responses-path}" copy-unmatched-params="true" />'
   : replace(loadTextContent('streaming-routing.xml'), '{streaming-proxy-backend-id}', proxyBackend.name)
-var routedPolicy = replace(loadTextContent('policy.xml'), '{backend-routing}', routing)
+var blocklistPolicy = replace(loadTextContent('policy.xml'), '{organization-blocked-domain-literals}', join(map(loadJsonContent('blocked-domains.json'), domain => '"${domain}"'), ', '))
+var routedPolicy = replace(blocklistPolicy, '{backend-routing}', routing)
 
 resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
   parent: api
@@ -136,7 +137,7 @@ resource apiDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024-0
     frontend: {
       request: noBodyLogging
       response: {
-        headers: ['x-web-search-count', 'x-web-search-count-status', 'x-web-search-request-id']
+        headers: ['x-response-metrics', 'x-response-metrics-status', 'x-response-request-id', 'x-response-redaction', 'x-response-buffered']
         body: { bytes: 0 }
       }
     }

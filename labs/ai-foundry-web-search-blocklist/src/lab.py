@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import requests
 from dotenv import dotenv_values
@@ -63,12 +63,15 @@ def azure_cli_command():
     )
 
 
-def az_json(*args, redact_values=()):
+def az_json(*args, redact_values=(), timeout=None):
     """Pass arguments directly to Azure CLI; never interpolate a shell command."""
-    result = subprocess.run(
-        [*azure_cli_command(), *args, "--only-show-errors", "--output", "json"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            [*azure_cli_command(), *args, "--only-show-errors", "--output", "json"],
+            capture_output=True, text=True, check=False, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Azure CLI request timed out after {timeout} seconds.") from None
     if result.returncode:
         detail = (result.stderr or result.stdout or "Azure CLI returned no error details.").strip()
         for secret in redact_values:
@@ -276,7 +279,115 @@ def grant_deployed_backend_access(config):
     return grant_backend_access(config, prepared)
 
 
-def deploy_streaming_proxy(config, prepared):
+def _deployment_connection_error(error):
+    detail = str(error).lower()
+    return any(marker in detail for marker in (
+        "connectionreseterror", "connection aborted", "connection reset by peer",
+        "forcibly closed", "read timed out", "readtimeout", "connecttimeout",
+        "remotedisconnected", "azure cli request timed out", "timeout reached by the command",
+        "status code '502'", "status code '503'", "status code '504'",
+    ))
+
+
+def _function_deployment_records(scope):
+    for attempt in range(3):
+        try:
+            return az_json("functionapp", "log", "deployment", "list", *scope, timeout=45) or []
+        except RuntimeError as error:
+            if attempt == 2 or not _deployment_connection_error(error):
+                raise
+            time.sleep(5 * (attempt + 1))
+
+
+def _wait_for_function_deployment(scope, *, deployment_id=None, previous_ids=None, timeout=1200):
+    """Follow one Kudu deployment; never infer success from an older publication."""
+    deadline = time.monotonic() + timeout
+    identify_deadline = min(deadline, time.monotonic() + 60)
+    last_status = None
+    while time.monotonic() < deadline:
+        try:
+            records = _function_deployment_records(scope)
+        except RuntimeError as error:
+            if not _deployment_connection_error(error):
+                raise
+            print("Deployment status connection interrupted; retrying the status check...", flush=True)
+            time.sleep(10)
+            continue
+        if previous_ids is not None:
+            candidates = [row for row in records if row.get("id") and row["id"] not in previous_ids
+                          and not row["id"].startswith("temp")]
+            if len(candidates) > 1:
+                raise RuntimeError("Multiple new Function deployments found. Inspect deployment logs and resume a specific deployment ID.")
+            if candidates:
+                if deployment_id and candidates[0]["id"] != deployment_id:
+                    raise RuntimeError("The new Function deployment changed during polling. Inspect deployment logs before continuing.")
+                deployment_id = candidates[0]["id"]
+        record = next((row for row in records if row.get("id") == deployment_id), None)
+        if record:
+            status = record.get("status")
+            if status == 3:
+                raise RuntimeError(f"Function deployment {deployment_id} failed. Inspect its Function deployment logs before retrying.")
+            if status == 4 and record.get("complete"):
+                if not record.get("active"):
+                    raise RuntimeError(f"Function deployment {deployment_id} was superseded; it is not the active deployment.")
+                print(f"Function deployment {deployment_id} succeeded.", flush=True)
+                return record
+            if status != last_status:
+                print(f"Waiting for Function deployment {deployment_id} (status {status})...", flush=True)
+                last_status = status
+        elif time.monotonic() >= identify_deadline:
+            raise RuntimeError("Could not identify the Function publication. Inspect deployment logs before uploading again.")
+        time.sleep(10)
+    target = deployment_id or "the new publication"
+    raise RuntimeError(f"Timed out checking Function deployment {target}; its server-side build may still be running. Resume that deployment ID after checking its logs.")
+
+
+def _publish_function_package(package_path, scope, *, redact_values=()):
+    previous_ids = {row["id"] for row in _function_deployment_records(scope) if row.get("id")}
+    try:
+        az_json("functionapp", "deployment", "source", "config-zip", *scope,
+                "--src", str(package_path), "--timeout", "1200", "--build-remote", "true",
+                redact_values=redact_values, timeout=1260)
+    except RuntimeError as error:
+        if not _deployment_connection_error(error):
+            raise
+        print("Azure CLI lost the deployment connection; checking the accepted publication without uploading again...", flush=True)
+    # Even a CLI success must correspond to a new, completed, active publication.
+    return _wait_for_function_deployment(scope, previous_ids=previous_ids)
+
+
+def _streaming_proxy_ready(url, key):
+    """Check proxy and regex routes without calling Foundry."""
+    try:
+        ready = requests.post(
+            url + "/api/responses",
+            headers={"x-proxy-key": key, "x-response-request-id": str(uuid4())},
+            json={}, timeout=10,
+        )
+        proxy_ready = ready.status_code == 400 and ready.json() == {
+            "error": "Expected a streaming or web_search Responses request with valid blocked domains",
+        }
+        return proxy_ready and _redactor_ready(url, key)
+    except (requests.RequestException, ValueError, IndexError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def _redactor_ready(url, key):
+    first = {"type": "response.output_text.delta", "item_id": "readiness", "output_index": 1,
+             "content_index": 0, "delta": "https://you"}
+    second = {**first, "delta": "tube.com/watch?v=1 https://example.com"}
+    response = requests.post(
+        url + "/api/redact", headers={"x-proxy-key": key}, timeout=10,
+        json={"blocked_domains": ["youtube.com"], "events": [first, second],
+              "search_event": {"type": "response.web_search_call.searching", "item_id": "search"}},
+    )
+    if response.status_code != 200 or response.headers.get("x-response-redaction") != "regex":
+        return False
+    return response.json().get("events") == [
+        {**first, "delta": "[BLOCKED LINK]"}, {**second, "delta": " https://example.com"}]
+
+
+def deploy_streaming_proxy(config, prepared, *, resume_deployment_id=None, reuse_deployment=False):
     """Provision/publish the HTTP Function and its direct APIM reporting path."""
     parameters = prepared["parameters"]
     upstream = config.get("STREAMING_PROXY_FOUNDRY_RESPONSES_URL")
@@ -290,6 +401,7 @@ def deploy_streaming_proxy(config, prepared):
     foundry_key = config.get("AZURE_OPENAI_API_KEY", "") if not parameters["backendId"] else ""
     deployment_name = parameters["apiName"] + "-proxy-function"
     proxy_key = None
+    previous = None
     try:
         previous = az_json("deployment", "group", "show", "--subscription", prepared["subscription"],
                            "--resource-group", prepared["resource_group"], "--name", deployment_name)
@@ -308,6 +420,18 @@ def deploy_streaming_proxy(config, prepared):
     except RuntimeError as error:
         if not any(code in str(error) for code in ("DeploymentNotFound", "ResourceNotFound")):
             raise
+    if reuse_deployment:
+        outputs = {key: value["value"] for key, value in
+                   ((previous or {}).get("properties", {}).get("outputs") or {}).items()}
+        if not proxy_key or not outputs.get("proxyUrl") or not outputs.get("proxyAppName"):
+            raise RuntimeError("No existing streaming proxy is available. Run deploy(config, prepared) first.")
+        if not _streaming_proxy_ready(outputs["proxyUrl"], proxy_key):
+            raise RuntimeError(
+                "The existing Function is not ready for x-response-request-id and regex redaction. "
+                "Run deploy(config, prepared) to publish the current proxy before updating APIM."
+            )
+        print("Reusing the ready streaming Function; updating APIM routing...", flush=True)
+        return outputs, proxy_key
     proxy_key = proxy_key or secrets.token_urlsafe(32)
     proxy_parameters = {
         "apimServiceName": parameters["apimServiceName"], "apiName": parameters["apiName"],
@@ -340,50 +464,46 @@ def deploy_streaming_proxy(config, prepared):
                             "--name", str(uuid5(NAMESPACE_URL, f"{scope}/{principal}/{OPENAI_USER_ROLE}".lower())),
                             "--assignee-object-id", principal, "--assignee-principal-type", "ServicePrincipal",
                             "--scope", scope, "--role", OPENAI_USER_ROLE)
-        package_path = Path(directory) / "proxy.zip"
-        with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as package:
-            for filename in ("function_app.py", "host.json", "app.py", "accounting.py", "requirements.txt"):
-                package.write(LAB_DIR / "proxy" / filename, filename)
-        print("Publishing the streaming Function (remote Python build)...", flush=True)
-        for attempt in range(3):
-            try:
-                az_json("functionapp", "deployment", "source", "config-zip",
-                        "--subscription", prepared["subscription"], "--resource-group", prepared["resource_group"],
-                        "--name", outputs["proxyAppName"], "--src", str(package_path),
-                        "--timeout", "1200", "--build-remote", "true",
-                        redact_values=(foundry_key, proxy_key))
-                break
-            except RuntimeError as error:
-                if attempt == 2 or "Read timed out" not in str(error):
-                    raise
-                print("Function deployment endpoint is warming up; retrying publication...", flush=True)
-                time.sleep(10)
+        scope = ("--subscription", prepared["subscription"], "--resource-group", prepared["resource_group"],
+                 "--name", outputs["proxyAppName"])
+        if resume_deployment_id:
+            _wait_for_function_deployment(scope, deployment_id=resume_deployment_id)
+        else:
+            package_path = Path(directory) / "proxy.zip"
+            with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as package:
+                for filename in ("function_app.py", "host.json", "app.py", "accounting.py", "metrics.py", "requirements.txt",
+                                 "filtering.py", "processing.py", "redaction.py", "search.py", "streaming.py"):
+                    package.write(LAB_DIR / "proxy" / filename, filename)
+            print("Publishing the streaming Function (remote Python build)...", flush=True)
+            _publish_function_package(package_path, scope, redact_values=(foundry_key, proxy_key))
     # Reload before probing so an older host cannot answer readiness during a recycle.
     print("Loading the published package in a fresh Function host...", flush=True)
     for action in ("stop", "start"):
         az_json("functionapp", action, "--subscription", prepared["subscription"],
                 "--resource-group", prepared["resource_group"], "--name", outputs["proxyAppName"])
     for attempt in range(30):
-        try:
-            # Probe the authenticated route without making a model request.
-            ready = requests.post(outputs["proxyUrl"] + "/api/responses",
-                                  headers={"x-proxy-key": proxy_key}, json={}, timeout=10)
-            if ready.status_code == 400 and ready.json().get("error") == "Missing gateway request ID":
-                return outputs, proxy_key
-        except (requests.RequestException, ValueError):
-            pass
+        if _streaming_proxy_ready(outputs["proxyUrl"], proxy_key):
+            return outputs, proxy_key
         time.sleep(10)
     raise RuntimeError("Streaming app is not ready. Inspect App Service deployment/startup logs and retry.")
 
 
-def deploy(config, prepared):
-    """Deploy the streaming proxy first, then switch APIM routing to the ready app."""
+def deploy(config, prepared, *, resume_proxy_deployment_id=None, reuse_streaming_proxy=False):
+    """Deploy APIM after publishing the proxy, or reuse its existing ready deployment."""
+    if reuse_streaming_proxy and resume_proxy_deployment_id is not None:
+        raise ValueError("Choose reuse_streaming_proxy or resume_proxy_deployment_id, not both.")
+    streaming_enabled = config.get("ENABLE_STREAMING_PROXY", "true").lower() not in ("false", "0", "no")
+    if reuse_streaming_proxy and not streaming_enabled:
+        raise ValueError("reuse_streaming_proxy requires ENABLE_STREAMING_PROXY=true.")
     grant_backend_access(config, prepared)
     parameters = dict(prepared["parameters"])
     if not parameters["backendId"]:
         parameters["foundryApiKey"] = config.get("AZURE_OPENAI_API_KEY", "")
-    if config.get("ENABLE_STREAMING_PROXY", "true").lower() not in ("false", "0", "no"):
-        proxy_outputs, proxy_key = deploy_streaming_proxy(config, prepared)
+    if streaming_enabled:
+        proxy_outputs, proxy_key = deploy_streaming_proxy(
+            config, prepared, resume_deployment_id=resume_proxy_deployment_id,
+            reuse_deployment=reuse_streaming_proxy,
+        )
         parameters["streamingProxyUrl"] = proxy_outputs["proxyUrl"]
         parameters["streamingProxyKey"] = proxy_key
     document = {
@@ -403,7 +523,16 @@ def deploy(config, prepared):
         )
 
 
-def send_response(config, prepared, payload):
+def show_response_metrics(headers):
+    """Display the same gateway metric headers for JSON and streaming responses."""
+    for name in ("x-response-metrics-status", "x-response-request-id", "x-response-metrics",
+                 "x-response-redaction", "x-response-buffered"):
+        if name in headers:
+            print(f"{name}: {headers[name]}")
+
+
+def send_response(config, prepared, payload, *, return_headers=False):
+    """Send a JSON request, optionally retaining headers for metric inspection."""
     key = config.get("APIM_SUBSCRIPTION_KEY")
     if not key:
         raise ValueError("Set APIM_SUBSCRIPTION_KEY to an all-APIs or lab-API subscription key.")
@@ -421,7 +550,8 @@ def send_response(config, prepared, payload):
             if secret:
                 detail = detail.replace(secret, "<redacted>")
         message = f"HTTP {response.status_code} {response.reason}: {detail[:2000]}"
-        request_id = response.headers.get("apim-request-id") or response.headers.get("x-ms-request-id")
+        request_id = (response.headers.get("x-response-request-id") or response.headers.get("apim-request-id")
+                      or response.headers.get("x-ms-request-id"))
         if request_id:
             message += f"\nRequest ID: {request_id}"
         if response.status_code == 401 and "PermissionDenied" in detail:
@@ -431,4 +561,5 @@ def send_response(config, prepared, payload):
                 "to grant access to that account."
             )
         raise requests.HTTPError(message, response=response, request=response.request) from error
-    return response.json()
+    body = response.json()
+    return (body, response.headers) if return_headers else body

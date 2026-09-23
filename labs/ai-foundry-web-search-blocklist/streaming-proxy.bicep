@@ -14,7 +14,7 @@ resource usageApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apim
   name: '${apiName}-usage'
   properties: {
-    displayName: 'Trusted web-search usage reports'
+    displayName: 'Trusted response metrics'
     path: '${apiPath}-usage'
     protocols: ['https']
     apiType: 'http'
@@ -25,7 +25,7 @@ resource usageApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
 resource usageOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
   parent: usageApi
   name: 'report-usage'
-  properties: { displayName: 'Report web-search usage', method: 'POST', urlTemplate: '/reports', responses: [] }
+  properties: { displayName: 'Report response metrics', method: 'POST', urlTemplate: '/reports', responses: [] }
 }
 resource reporterSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: apim
@@ -57,7 +57,7 @@ resource usageDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2024
     frontend: {
       request: noBody
       response: {
-        headers: ['x-web-search-count', 'x-web-search-count-status', 'x-web-search-request-id']
+        headers: ['x-response-metrics', 'x-response-metrics-status', 'x-response-request-id']
         body: { bytes: 0 }
       }
     }
@@ -98,6 +98,8 @@ resource proxySettings 'Microsoft.Web/sites/config@2024-04-01' = {
     SCM_DO_BUILD_DURING_DEPLOYMENT: 'true'
     WEBSITES_CONTAINER_START_TIME_LIMIT: '600'
     PROXY_API_KEY: proxyApiKey
+    REDACTION_URL: 'https://${proxyApp.properties.defaultHostName}/api/redact'
+    ORGANIZATION_BLOCKED_DOMAINS: loadTextContent('blocked-domains.json')
     FOUNDRY_RESPONSES_URL: foundryResponsesUrl
     FOUNDRY_API_KEY: foundryApiKey
     USAGE_REPORT_URL: '${apim.properties.gatewayUrl}/${apiPath}-usage/reports'
@@ -110,7 +112,7 @@ resource proxySettings 'Microsoft.Web/sites/config@2024-04-01' = {
   }
 }
 
-// Console logs retain failed usage-report IDs/counts without an Azure Storage account.
+// Console logs retain failed report IDs/metrics without an Azure Storage account.
 resource proxyLogs 'Microsoft.Web/sites/config@2024-04-01' = {
   parent: proxyApp
   name: 'logs'

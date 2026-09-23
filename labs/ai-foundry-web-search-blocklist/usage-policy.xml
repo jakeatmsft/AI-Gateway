@@ -1,46 +1,62 @@
 <policies>
     <inbound>
         <base />
-        <!-- Even an ordinary all-APIs subscription must not submit trusted usage. -->
+        <!-- Only the server-side proxy may submit metrics, including with all-APIs keys. -->
         <choose>
             <when condition="@(context.Subscription == null || context.Subscription.Id != &quot;{reporter-subscription-id}&quot;)">
                 <return-response><set-status code="403" reason="Proxy reporting credential required" /></return-response>
             </when>
         </choose>
-        <set-variable name="usage-valid" value="@{
-            var id = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-request-id&quot;, &quot;&quot;);
-            var count = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count&quot;, &quot;&quot;);
-            var status = context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count-status&quot;, &quot;&quot;);
-            if (!System.Text.RegularExpressions.Regex.IsMatch(id, &quot;^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$&quot;)) { return false; }
-            if (status == &quot;unavailable&quot;) { return count == &quot;&quot;; }
-            return status == &quot;proxy-reported&quot; &amp;&amp; System.Text.RegularExpressions.Regex.IsMatch(count, &quot;^[0-9]{1,18}$&quot;);
+        <!-- A fixed header schema works for any numeric metric registry. This is a
+             separate report request; neither this policy nor APIM reads the SSE body. -->
+        <set-variable name="response-metrics" value="@{
+            var id = context.Request.Headers.GetValueOrDefault(&quot;x-response-request-id&quot;, &quot;&quot;);
+            var raw = context.Request.Headers.GetValueOrDefault(&quot;x-response-metrics&quot;, &quot;&quot;);
+            if (!System.Text.RegularExpressions.Regex.IsMatch(id, @&quot;^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z&quot;)) { return &quot;&quot;; }
+            if (raw.Length == 0 || raw.Length &gt; 4096) { return &quot;&quot;; }
+            try {
+                var metrics = JObject.Parse(raw);
+                if (metrics.Count == 0 || metrics.Count &gt; 32) { return &quot;&quot;; }
+                foreach (var metric in metrics.Properties()) {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(metric.Name, @&quot;^[a-z][a-z0-9_]{0,63}\z&quot;)) { return &quot;&quot;; }
+                    if (metric.Value.Type == JTokenType.Null) { continue; }
+                    if (metric.Value.Type != JTokenType.Integer &amp;&amp; metric.Value.Type != JTokenType.Float) { return &quot;&quot;; }
+                    if (metric.Value.Type == JTokenType.Integer) {
+                        var number = (long)metric.Value;
+                        if (number &lt; -1000000000000000000L || number &gt; 1000000000000000000L) { return &quot;&quot;; }
+                    } else {
+                        var number = (double)metric.Value;
+                        if (double.IsNaN(number) || double.IsInfinity(number) || Math.Abs(number) &gt; 1e18) { return &quot;&quot;; }
+                    }
+                }
+                var canonical = metrics.ToString(Newtonsoft.Json.Formatting.None);
+                return canonical.Length &lt;= 4096 ? canonical : &quot;&quot;;
+            } catch (Exception) { return &quot;&quot;; }
         }" />
         <choose>
-            <when condition="@(!(bool)context.Variables[&quot;usage-valid&quot;])">
-                <return-response><set-status code="400" reason="Invalid usage report" /></return-response>
+            <when condition="@(string.IsNullOrEmpty((string)context.Variables[&quot;response-metrics&quot;]))">
+                <return-response><set-status code="400" reason="Invalid metrics report" /></return-response>
             </when>
-            <when condition="@(context.Request.Headers.GetValueOrDefault(&quot;x-web-search-count-status&quot;, &quot;&quot;) == &quot;proxy-reported&quot;)">
-                <return-response>
-                    <set-status code="204" reason="Usage accepted" />
-                    <set-header name="x-web-search-request-id" exists-action="override">
-                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-request-id", ""))</value>
-                    </set-header>
-                    <set-header name="x-web-search-count" exists-action="override">
-                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-count", ""))</value>
-                    </set-header>
-                    <set-header name="x-web-search-count-status" exists-action="override"><value>proxy-reported</value></set-header>
-                </return-response>
-            </when>
-            <otherwise>
-                <return-response>
-                    <set-status code="204" reason="Unavailable usage recorded" />
-                    <set-header name="x-web-search-request-id" exists-action="override">
-                        <value>@(context.Request.Headers.GetValueOrDefault("x-web-search-request-id", ""))</value>
-                    </set-header>
-                    <set-header name="x-web-search-count-status" exists-action="override"><value>unavailable</value></set-header>
-                </return-response>
-            </otherwise>
         </choose>
+        <return-response>
+            <set-status code="204" reason="Metrics accepted" />
+            <set-header name="x-response-request-id" exists-action="override">
+                <value>@(context.Request.Headers.GetValueOrDefault("x-response-request-id", ""))</value>
+            </set-header>
+            <set-header name="x-response-metrics" exists-action="override">
+                <value>@((string)context.Variables["response-metrics"])</value>
+            </set-header>
+            <set-header name="x-response-metrics-status" exists-action="override">
+                <value>@{
+                    var metrics = JObject.Parse((string)context.Variables["response-metrics"]);
+                    var available = 0;
+                    foreach (var metric in metrics.Properties()) {
+                        if (metric.Value.Type != JTokenType.Null) { available++; }
+                    }
+                    return available == 0 ? "unavailable" : (available == metrics.Count ? "proxy-reported" : "partial");
+                }</value>
+            </set-header>
+        </return-response>
     </inbound>
     <backend><base /></backend>
     <outbound><base /></outbound>

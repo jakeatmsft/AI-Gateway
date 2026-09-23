@@ -1,0 +1,9 @@
+.lab-state.json
+function.zip
+local.settings.json
+.python_packages/
+.pytest_cache/
+__pycache__/
+params.json
+.venv/
+.env

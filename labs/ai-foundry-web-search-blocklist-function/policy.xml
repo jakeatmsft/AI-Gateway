@@ -1,0 +1,251 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="{tenant-id}" failed-validation-httpcode="401" failed-validation-error-message="A permitted Entra caller and access_as_user scope are required.">
+      <audiences><audience>{gateway-client-id}</audience></audiences>
+      <required-claims>
+        <claim name="oid" match="all"><value>{caller-object-id}</value></claim>
+        <claim name="scp" match="any" separator=" "><value>access_as_user</value></claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <set-variable name="requestError" value='@{
+      try {
+        var raw = context.Request.Body.As&lt;string&gt;(preserveContent: true);
+        if (System.Text.Encoding.UTF8.GetByteCount(raw) &gt; 65536) { return "Request exceeds 64 KiB"; }
+        var body = Newtonsoft.Json.Linq.JObject.Parse(raw);
+        if (body["input"] == null || (body["input"].Type != Newtonsoft.Json.Linq.JTokenType.String &amp;&amp; body["input"].Type != Newtonsoft.Json.Linq.JTokenType.Array)) { return "input must be text or a Responses input list"; }
+        if (body["stream"] != null &amp;&amp; body["stream"].Type != Newtonsoft.Json.Linq.JTokenType.Boolean) { return "stream must be boolean"; }
+        if (body["urls_csv"] != null || body["blocked_domains"] != null) { return "Use tools[].filters.blocked_domains"; }
+        if (body["background"] != null &amp;&amp; (body["background"].Type != Newtonsoft.Json.Linq.JTokenType.Boolean || (bool)body["background"])) { return "background requests are not supported"; }
+        if (body["previous_response_id"] != null || body["conversation"] != null) { return "Use stateless input; conversation and previous_response_id are not supported"; }
+        if (body["tools"] != null) {
+          var tools = body["tools"] as Newtonsoft.Json.Linq.JArray;
+          if (tools == null) { return "tools must be an array"; }
+          foreach (var tool in tools) {
+            if (!(tool is Newtonsoft.Json.Linq.JObject) || (string)tool["type"] != "web_search") { return "This lab supports only the hosted web_search tool"; }
+            var filters = tool["filters"];
+            if (filters != null &amp;&amp; filters.Type != Newtonsoft.Json.Linq.JTokenType.Null) {
+              if (!(filters is Newtonsoft.Json.Linq.JObject)) { return "web_search.filters must be an object or null"; }
+              var blocked = filters["blocked_domains"];
+              if (blocked != null &amp;&amp; blocked.Type != Newtonsoft.Json.Linq.JTokenType.Null) {
+                if (!(blocked is Newtonsoft.Json.Linq.JArray) || blocked.Count() &gt; 100) { return "blocked_domains must be an array of at most 100 hostnames"; }
+                foreach (var domain in blocked) {
+                  if (domain.Type != Newtonsoft.Json.Linq.JTokenType.String || !System.Text.RegularExpressions.Regex.IsMatch((string)domain, @"^(?=.{1,253}\.?$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.?$")) { return "blocked_domains must contain DNS hostnames; use punycode for internationalized names"; }
+                }
+              }
+            }
+          }
+        }
+        if (body["max_output_tokens"] != null &amp;&amp; (body["max_output_tokens"].Type != Newtonsoft.Json.Linq.JTokenType.Integer || (int)body["max_output_tokens"] &lt; 16 || (int)body["max_output_tokens"] &gt; 4096)) { return "max_output_tokens must be between 16 and 4096"; }
+        return "";
+      } catch { return "Invalid JSON request"; }
+    }' />
+    <choose>
+      <when condition='@(!string.IsNullOrEmpty((string)context.Variables["requestError"]))'>
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>@(new Newtonsoft.Json.Linq.JObject(new Newtonsoft.Json.Linq.JProperty("error", new Newtonsoft.Json.Linq.JObject(new Newtonsoft.Json.Linq.JProperty("code", "invalid_request"), new Newtonsoft.Json.Linq.JProperty("message", (string)context.Variables["requestError"])))).ToString())</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-variable name="requiredDomains" value='{blocked-domains}' />
+    <set-variable name="originalRequest" value='@(context.Request.Body.As&lt;string&gt;(preserveContent: true))' />
+    <set-variable name="hasWebSearch" value='@{
+      var body = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["originalRequest"]);
+      var tools = body["tools"] as Newtonsoft.Json.Linq.JArray;
+      return tools != null &amp;&amp; tools.Count &gt; 0;
+    }' />
+    <set-variable name="upstreamRequest" value='@{
+      var body = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["originalRequest"]);
+      var tools = body["tools"] as Newtonsoft.Json.Linq.JArray;
+      var required = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables["requiredDomains"]);
+      if (tools != null) {
+        foreach (var tool in tools) {
+          var filters = tool["filters"] as Newtonsoft.Json.Linq.JObject;
+          if (filters == null) { filters = new Newtonsoft.Json.Linq.JObject(); tool["filters"] = filters; }
+          var blocked = filters["blocked_domains"] as Newtonsoft.Json.Linq.JArray ?? new Newtonsoft.Json.Linq.JArray();
+          var merged = new Newtonsoft.Json.Linq.JArray();
+          foreach (var domain in blocked.Concat(required)) {
+            var host = ((string)domain).ToLowerInvariant().TrimEnd(&apos;.&apos;);
+            if (!merged.Any(existing =&gt; (string)existing == host)) { merged.Add(host); }
+          }
+          filters["blocked_domains"] = merged;
+        }
+      }
+      body["model"] = "{deployment}";
+      body["store"] = false;
+      if (body["max_output_tokens"] == null) { body["max_output_tokens"] = 4096; }
+      return body.ToString(Newtonsoft.Json.Formatting.None);
+    }' />
+    <set-variable name="effectiveDomains" value='@{
+      var domains = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables["requiredDomains"]);
+      var body = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["upstreamRequest"]);
+      var tools = body["tools"] as Newtonsoft.Json.Linq.JArray;
+      if (tools != null) {
+        foreach (var tool in tools) {
+          foreach (var domain in (Newtonsoft.Json.Linq.JArray)tool["filters"]["blocked_domains"]) {
+            if (!domains.Any(existing =&gt; string.Equals((string)existing, (string)domain, StringComparison.OrdinalIgnoreCase))) { domains.Add(domain.DeepClone()); }
+          }
+        }
+      }
+      return domains.ToString(Newtonsoft.Json.Formatting.None);
+    }' />
+    <choose>
+      <when condition='@(Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables["effectiveDomains"]).Count &gt; 100)'>
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>{"error":{"code":"invalid_blocklist","message":"Merged blocklist exceeds 100 hostnames"}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-variable name="route" value="foundry" />
+    <set-variable name="isStreaming" value='@((bool?)Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["originalRequest"])["stream"] ?? false)' />
+    <choose>
+      <when condition='@((bool)context.Variables["hasWebSearch"] &amp;&amp; (bool)context.Variables["isStreaming"])'>
+        <!-- Forward SSE through a live relay. Never read the response body in APIM. -->
+        <set-variable name="route" value="stream-function" />
+        <set-body>@((string)context.Variables["upstreamRequest"])</set-body>
+        <set-backend-service base-url="{function-endpoint}" />
+        <rewrite-uri template="/api/responses" copy-unmatched-params="false" />
+        <authentication-managed-identity resource="api://{function-client-id}" />
+      </when>
+      <when condition='@((bool)context.Variables["hasWebSearch"])'>
+        <!-- JSON only: inspect the completed response before selecting the redactor. -->
+        <send-request mode="new" response-variable-name="initial" timeout="180" ignore-error="true">
+          <set-url>{foundry-endpoint}/responses</set-url>
+          <set-method>POST</set-method>
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-header name="Accept-Encoding" exists-action="override"><value>identity</value></set-header>
+          <set-body>@((string)context.Variables["upstreamRequest"])</set-body>
+          <authentication-managed-identity resource="https://ai.azure.com" />
+        </send-request>
+        <choose>
+          <when condition='@(context.Variables["initial"] == null)'>
+            <return-response>
+              <set-status code="504" reason="Gateway Timeout" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"error":{"code":"initial_upstream_unavailable","message":"Initial Foundry request timed out or could not connect"}}</set-body>
+            </return-response>
+          </when>
+          <when condition='@(((IResponse)context.Variables["initial"]).StatusCode &gt;= 400)'>
+            <return-response response-variable-name="initial" />
+          </when>
+        </choose>
+        <set-variable name="initialBody" value='@(((IResponse)context.Variables["initial"]).Body.As&lt;string&gt;(preserveContent: true))' />
+        <choose>
+          <when condition='@(System.Text.Encoding.UTF8.GetByteCount((string)context.Variables["initialBody"]) &gt; 1048576)'>
+            <return-response>
+              <set-status code="502" reason="Bad Gateway" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"error":{"code":"initial_response_too_large","message":"Initial response exceeds the lab 1 MiB limit"}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <set-variable name="initialResponse" value='@{
+          try {
+            var raw = (string)context.Variables["initialBody"];
+            var contentType = ((IResponse)context.Variables["initial"]).Headers.GetValueOrDefault("Content-Type", "");
+            if (!contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)) { return ""; }
+            return Newtonsoft.Json.Linq.JObject.Parse(raw).ToString(Newtonsoft.Json.Formatting.None);
+          } catch { return ""; }
+        }' />
+        <choose>
+          <when condition='@(string.IsNullOrEmpty((string)context.Variables["initialResponse"]))'>
+            <return-response>
+              <set-status code="502" reason="Bad Gateway" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"error":{"code":"invalid_json_response","message":"Foundry returned malformed JSON"}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <set-variable name="initialMetrics" value='@{
+          var response = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"]);
+          var metrics = new Newtonsoft.Json.Linq.JObject();
+          var count = response.SelectToken("tool_usage.web_search.num_requests");
+          var tokens = response.SelectToken("usage.total_tokens");
+          metrics["web_search_count"] = count != null &amp;&amp; count.Type == Newtonsoft.Json.Linq.JTokenType.Integer &amp;&amp; (decimal)count &gt;= 0 &amp;&amp; (decimal)count &lt;= 1000000000000000000m ? count.DeepClone() : Newtonsoft.Json.Linq.JValue.CreateNull();
+          metrics["total_tokens"] = tokens != null &amp;&amp; tokens.Type == Newtonsoft.Json.Linq.JTokenType.Integer &amp;&amp; (decimal)tokens &gt;= 0 &amp;&amp; (decimal)tokens &lt;= 1000000000000000000m ? tokens.DeepClone() : Newtonsoft.Json.Linq.JValue.CreateNull();
+          return metrics.ToString(Newtonsoft.Json.Formatting.None);
+        }' />
+        <set-variable name="usedWebSearch" value='@{
+          var response = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"]);
+          var output = response["output"] as Newtonsoft.Json.Linq.JArray;
+          if (output == null) { return false; }
+          foreach (var item in output) {
+            if (item is Newtonsoft.Json.Linq.JObject &amp;&amp; (string)item["type"] == "web_search_call") { return true; }
+          }
+          return false;
+        }' />
+        <choose>
+          <when condition='@(!(bool)context.Variables["usedWebSearch"])'>
+            <!-- A tool declaration is not proof that the model used the tool.
+                 Preserve original JSON when no web_search_call is present. -->
+            <return-response response-variable-name="initial">
+              <set-header name="x-lab-route" exists-action="override"><value>foundry-buffered</value></set-header>
+              <set-header name="x-lab-initial-buffered" exists-action="override"><value>true</value></set-header>
+              <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
+              <set-header name="x-response-metrics" exists-action="override"><value>@((string)context.Variables["initialMetrics"])</value></set-header>
+              <set-header name="x-response-metrics-status" exists-action="override"><value>@{
+                var metrics = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialMetrics"]);
+                var known = metrics.Properties().Count(p =&gt; p.Value.Type != Newtonsoft.Json.Linq.JTokenType.Null);
+                return known == 2 ? "reported" : known == 1 ? "partial" : "unavailable";
+              }</value></set-header>
+            </return-response>
+          </when>
+        </choose>
+        <set-variable name="route" value="function" />
+        <set-body>@{
+          var original = Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["originalRequest"]);
+          return new Newtonsoft.Json.Linq.JObject(
+            new Newtonsoft.Json.Linq.JProperty("response", Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"])),
+            new Newtonsoft.Json.Linq.JProperty("blocked_domains", Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables["effectiveDomains"])),
+            new Newtonsoft.Json.Linq.JProperty("stream", (bool?)original["stream"] ?? false)
+          ).ToString(Newtonsoft.Json.Formatting.None);
+        }</set-body>
+        <set-backend-service base-url="{function-endpoint}" />
+        <rewrite-uri template="/api/redact" copy-unmatched-params="false" />
+        <authentication-managed-identity resource="api://{function-client-id}" />
+      </when>
+      <otherwise>
+        <set-body>@((string)context.Variables["upstreamRequest"])</set-body>
+        <set-backend-service base-url="{foundry-endpoint}" />
+        <rewrite-uri template="/responses" copy-unmatched-params="false" />
+        <authentication-managed-identity resource="https://ai.azure.com" />
+      </otherwise>
+    </choose>
+    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+    <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
+    <set-header name="Accept-Encoding" exists-action="override"><value>identity</value></set-header>
+    <set-header name="api-key" exists-action="delete" />
+    <set-header name="x-functions-key" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="x-ms-client-principal" exists-action="delete" />
+    <set-header name="x-ms-client-principal-id" exists-action="delete" />
+    <set-header name="x-ms-client-principal-name" exists-action="delete" />
+    <set-header name="x-ms-client-principal-idp" exists-action="delete" />
+  </inbound>
+  <backend>
+    <!-- SSE relay forwards live events; its regex calls are conditional on observed search. -->
+    <forward-request timeout="180" buffer-response="false" fail-on-error-status-code="false" />
+  </backend>
+  <outbound>
+    <!-- Do not read or rewrite SSE bodies here. -->
+    <set-header name="x-lab-route" exists-action="override"><value>@((string)context.Variables["route"])</value></set-header>
+    <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
+    <set-header name="x-lab-initial-buffered" exists-action="override"><value>@(((bool)context.Variables["hasWebSearch"] &amp;&amp; !(bool)context.Variables["isStreaming"]).ToString().ToLowerInvariant())</value></set-header>
+    <choose>
+      <when condition='@((string)context.Variables["route"] == "function")'>
+        <set-header name="x-lab-initial-response-id" exists-action="override"><value>@((string)Newtonsoft.Json.Linq.JObject.Parse((string)context.Variables["initialResponse"])["id"])</value></set-header>
+      </when>
+    </choose>
+  </outbound>
+  <on-error>
+    <return-response>
+      <set-status code='@(context.LastError.Source == "validate-azure-ad-token" ? 401 : 502)' reason="Request failed" />
+      <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+      <set-body>@(context.LastError.Source == "validate-azure-ad-token" ? "{\"error\":{\"code\":\"unauthorized\",\"message\":\"A permitted Entra caller and access_as_user scope are required\"}}" : "{\"error\":{\"code\":\"gateway_error\",\"message\":\"Gateway processing failed; inspect the APIM trace with an authorized operator\"}}")</set-body>
+    </return-response>
+  </on-error>
+</policies>

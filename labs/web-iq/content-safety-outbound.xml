@@ -108,11 +108,6 @@
                     if (offset + length &lt; text.Length &amp;&amp; char.IsHighSurrogate(text[offset + length - 1])) { length--; }
                     return text.Substring(offset, length);
                 }" />
-                <emit-metric name="Web IQ Content Safety Calls" value="1" namespace="web-iq">
-                    <dimension name="Team" value="@(context.Subscription.Id)" />
-                    <dimension name="Operation ID" />
-                    <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
-                </emit-metric>
                 <send-request mode="new" response-variable-name="web-iq-safety-response" timeout="15" ignore-error="true">
                     <set-url>@("{content-safety-endpoint}".TrimEnd('/') + "/contentsafety/text:analyze?api-version=2024-09-01")</set-url>
                     <set-method>POST</set-method>
@@ -174,24 +169,15 @@
             </choose>
         </otherwise>
     </choose>
-    <choose>
-        <when condition="@{
-            if ((string)context.Variables[&quot;web-iq-safety-status&quot;] != &quot;analyzed&quot;) { return false; }
-            var scores = JObject.Parse((string)context.Variables[&quot;web-iq-safety-scores&quot;]);
-            return scores.Properties().Any(category =&gt; (int)category.Value &gt;= {content-safety-block-threshold});
-        }">
-            <set-variable name="web-iq-safety-status" value="blocked" />
-        </when>
-    </choose>
     <set-variable name="web-iq-safety-latency" value="@(Math.Round((DateTime.UtcNow - (DateTime)context.Variables[&quot;web-iq-safety-start&quot;]).TotalMilliseconds))" />
     <emit-metric name="Web IQ Content Safety Responses" value="1" namespace="web-iq">
-        <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+        <dimension name="Subscription ID" />
         <dimension name="Operation ID" />
         <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
         <dimension name="Content Safety Status" value="@((string)context.Variables[&quot;web-iq-safety-status&quot;])" />
     </emit-metric>
     <emit-metric name="Web IQ Content Safety Latency" value="@((double)context.Variables[&quot;web-iq-safety-latency&quot;])" namespace="web-iq">
-        <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+        <dimension name="Subscription ID" />
         <dimension name="Operation ID" />
         <dimension name="Content Safety Status" value="@((string)context.Variables[&quot;web-iq-safety-status&quot;])" />
     </emit-metric>
@@ -207,18 +193,10 @@
     <!-- Never forward a backend-supplied score as APIM moderation telemetry. -->
     <set-header name="x-content-safety-scores" exists-action="delete" />
     <choose>
-        <when condition="@((string)context.Variables[&quot;web-iq-safety-status&quot;] == &quot;analyzed&quot; || (string)context.Variables[&quot;web-iq-safety-status&quot;] == &quot;blocked&quot;)">
+        <when condition="@((string)context.Variables[&quot;web-iq-safety-status&quot;] == &quot;analyzed&quot;)">
             <set-header name="x-content-safety-scores" exists-action="override">
                 <value>@((string)context.Variables["web-iq-safety-scores"])</value>
             </set-header>
-            <choose>
-                <when condition="@((string)context.Variables[&quot;web-iq-safety-status&quot;] == &quot;blocked&quot;)">
-                    <set-status code="403" reason="Forbidden" />
-                    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-                    <set-header name="Content-Encoding" exists-action="delete" />
-                    <set-body>{"errorCode":"ContentSafetyBlocked","userMessage":"Web results exceeded the gateway content safety threshold."}</set-body>
-                </when>
-            </choose>
         </when>
         <when condition="@((string)context.Variables[&quot;web-iq-safety-status&quot;] != &quot;no-text&quot;)">
             <!-- A failed/incomplete scan must not release unmoderated upstream content. -->
@@ -238,7 +216,7 @@
         var status = (string)context.Variables["web-iq-safety-status"];
         var telemetry = new JObject(
             new JProperty("status", status),
-            new JProperty("scores", status == "analyzed" || status == "blocked" ? JObject.Parse((string)context.Variables["web-iq-safety-scores"]) : new JObject()),
+            new JProperty("scores", status == "analyzed" ? JObject.Parse((string)context.Variables["web-iq-safety-scores"]) : new JObject()),
             new JProperty("chunks", (int)context.Variables["web-iq-safety-chunks"]),
             new JProperty("latencyMs", (double)context.Variables["web-iq-safety-latency"]),
             new JProperty("requestId", context.RequestId.ToString())

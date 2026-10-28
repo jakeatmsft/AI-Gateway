@@ -2,7 +2,7 @@
   "openapi": "3.0.1",
   "info": {
     "title": "Microsoft Web IQ",
-    "description": "Microsoft Web IQ through APIM with managed identity authentication by default, an optional API-key fallback for testing only (not recommended for production), Content Safety, REST/MCP operation permissions, team rate limits, quotas, and usage telemetry.",
+    "description": "Microsoft Web IQ endpoints exposed through Azure API Management.",
     "version": "v3"
   },
   "paths": {
@@ -137,51 +137,6 @@
                 }
               }
             }
-          },
-          "401": {
-            "description": "Missing/invalid team subscription or upstream Web IQ authentication failure."
-          },
-          "403": {
-            "description": "WebIqOperationBlocked for a denied operation; ContentSafetyBlocked when a result reaches the moderation threshold; or APIM daily quota exceeded with Retry-After.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Team HTTP request rate exceeded; retry after the Retry-After interval.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -189,7 +144,7 @@
     "/browse": {
       "post": {
         "summary": "Browse a URL",
-        "description": "Uses the shared browse permission for REST and MCP. Denied by default; configure both operation lists to enable.",
+        "description": "Published to demonstrate an APIM policy that blocks the operation before it reaches Web IQ.",
         "operationId": "browse-url",
         "requestBody": {
           "required": true,
@@ -269,51 +224,6 @@
               },
               "x-content-safety-latency-ms": {
                 "$ref": "#/components/headers/x-content-safety-latency-ms"
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid team subscription or upstream Web IQ authentication failure."
-          },
-          "403": {
-            "description": "WebIqOperationBlocked for a denied operation; ContentSafetyBlocked when a result reaches the moderation threshold; or APIM daily quota exceeded with Retry-After.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Team HTTP request rate exceeded; retry after the Retry-After interval.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
               }
             }
           }
@@ -405,54 +315,6 @@
                 "$ref": "#/components/headers/x-content-safety-latency-ms"
               }
             }
-          },
-          "401": {
-            "description": "Missing/invalid team subscription or upstream Web IQ authentication failure."
-          },
-          "403": {
-            "description": "WebIqOperationBlocked for a denied operation; ContentSafetyBlocked when a result reaches the moderation threshold; or APIM daily quota exceeded with Retry-After.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Team HTTP request rate exceeded; retry after the Retry-After interval.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidMcpRequest: malformed or batched JSON-RPC, or unsupported method."
           }
         }
       },
@@ -492,51 +354,6 @@
               },
               "x-content-safety-latency-ms": {
                 "$ref": "#/components/headers/x-content-safety-latency-ms"
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid team subscription or upstream Web IQ authentication failure."
-          },
-          "403": {
-            "description": "WebIqOperationBlocked for a denied operation; ContentSafetyBlocked when a result reaches the moderation threshold; or APIM daily quota exceeded with Retry-After.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Team HTTP request rate exceeded; retry after the Retry-After interval.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
               }
             }
           }
@@ -614,51 +431,6 @@
                 "$ref": "#/components/headers/x-content-safety-latency-ms"
               }
             }
-          },
-          "401": {
-            "description": "Missing/invalid team subscription or upstream Web IQ authentication failure."
-          },
-          "403": {
-            "description": "WebIqOperationBlocked for a denied operation; ContentSafetyBlocked when a result reaches the moderation threshold; or APIM daily quota exceeded with Retry-After.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Team HTTP request rate exceeded; retry after the Retry-After interval.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait when a gateway usage limit is exceeded.",
-                "schema": {
-                  "type": "integer"
-                }
-              },
-              "x-web-iq-limit": {
-                "description": "Gateway usage-limit reason, present for rate/quota rejections.",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "RateLimitExceeded",
-                    "QuotaExceeded"
-                  ]
-                }
-              }
-            }
           }
         }
       }
@@ -667,13 +439,13 @@
   "components": {
     "headers": {
       "x-content-safety-status": {
-        "description": "Gateway text moderation outcome: analyzed, blocked, no-text, not-applicable, or an analysis failure status.",
+        "description": "Gateway text moderation outcome. Successful analysis reports analyzed; empty responses report no-text.",
         "schema": {
           "type": "string"
         }
       },
       "x-content-safety-scores": {
-        "description": "JSON maximum Hate, Sexual, Violence, and SelfHarm scores (0, 2, 4, 6), present after complete analysis, including blocked results.",
+        "description": "JSON object containing maximum Hate, Sexual, Violence, and SelfHarm severities (0, 2, 4, 6). Present only after complete analysis.",
         "schema": {
           "type": "string"
         }

@@ -1,6 +1,211 @@
 <policies>
     <inbound>
         <base />
+        <set-variable name="restrictionMessage" value="@{
+            var body = context.Request.Body.As<Newtonsoft.Json.Linq.JObject>(preserveContent: true);
+            if (body == null)
+            {
+                return null;
+            }
+
+            bool hasBlockedMessageAttachment = false;
+            bool hasBlockedMessageContent = false;
+            bool hasTopLevelFileIds = false;
+            bool hasBackgroundTrue = false;
+
+            string message = null;
+
+            var inputToken = body["input"];
+            var inputArray = inputToken as Newtonsoft.Json.Linq.JArray;
+            if (inputArray != null)
+            {
+                foreach (var inputItemToken in inputArray)
+                {
+                    var inputItem = inputItemToken as Newtonsoft.Json.Linq.JObject;
+                    if (inputItem == null)
+                    {
+                        continue;
+                    }
+
+                    var contentArray = inputItem["content"] as Newtonsoft.Json.Linq.JArray;
+                    if (contentArray == null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var contentToken in contentArray)
+                    {
+                        var content = contentToken as Newtonsoft.Json.Linq.JObject;
+                        if (content == null)
+                        {
+                            continue;
+                        }
+
+                        var typeValue = (string)content["type"];
+                        if (!string.IsNullOrEmpty(typeValue) &&
+                            (string.Equals(typeValue, "input_file", System.StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(typeValue, "file_input", System.StringComparison.OrdinalIgnoreCase)))
+                        {
+                            hasBlockedMessageContent = true;
+                            break;
+                        }
+                    }
+
+                    if (hasBlockedMessageContent)
+                    {
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                var singleInput = inputToken as Newtonsoft.Json.Linq.JObject;
+                var contentArray = singleInput?["content"] as Newtonsoft.Json.Linq.JArray;
+                if (contentArray != null)
+                {
+                    foreach (var contentToken in contentArray)
+                    {
+                        var content = contentToken as Newtonsoft.Json.Linq.JObject;
+                        if (content == null)
+                        {
+                            continue;
+                        }
+
+                        var typeValue = (string)content["type"];
+                        if (!string.IsNullOrEmpty(typeValue) &&
+                            (string.Equals(typeValue, "input_file", System.StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(typeValue, "file_input", System.StringComparison.OrdinalIgnoreCase)))
+                        {
+                            hasBlockedMessageContent = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            var attachmentsArray = body["attachments"] as Newtonsoft.Json.Linq.JArray;
+            if (attachmentsArray != null)
+            {
+                foreach (var attachmentToken in attachmentsArray)
+                {
+                    var attachment = attachmentToken as Newtonsoft.Json.Linq.JObject;
+                    if (attachment == null)
+                    {
+                        continue;
+                    }
+
+                    if (attachment["file_id"] != null)
+                    {
+                        hasBlockedMessageAttachment = true;
+                        break;
+                    }
+
+                    var attachmentFileIds = attachment["file_ids"] as Newtonsoft.Json.Linq.JArray;
+                    if (attachmentFileIds != null && attachmentFileIds.Count > 0)
+                    {
+                        hasBlockedMessageAttachment = true;
+                        break;
+                    }
+
+                    var toolsArray = attachment["tools"] as Newtonsoft.Json.Linq.JArray;
+                    if (toolsArray != null)
+                    {
+                        foreach (var toolToken in toolsArray)
+                        {
+                            var tool = toolToken as Newtonsoft.Json.Linq.JObject;
+                            if (tool == null)
+                            {
+                                continue;
+                            }
+
+                            if (tool["file_id"] != null)
+                            {
+                                hasBlockedMessageAttachment = true;
+                                break;
+                            }
+
+                            var toolFileIds = tool["file_ids"] as Newtonsoft.Json.Linq.JArray;
+                            if (toolFileIds != null && toolFileIds.Count > 0)
+                            {
+                                hasBlockedMessageAttachment = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hasBlockedMessageAttachment)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var fileIdsArray = body["file_ids"] as Newtonsoft.Json.Linq.JArray;
+            if (fileIdsArray != null && fileIdsArray.Count > 0)
+            {
+                hasTopLevelFileIds = true;
+            }
+
+            var backgroundToken = body["background"];
+            if (backgroundToken != null)
+            {
+                if (backgroundToken.Type == Newtonsoft.Json.Linq.JTokenType.Boolean)
+                {
+                    hasBackgroundTrue = backgroundToken.Value<bool>();
+                }
+                else if (backgroundToken.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                {
+                bool parsed;
+                if (System.Boolean.TryParse((string)backgroundToken, out parsed))
+                {
+                    hasBackgroundTrue = parsed;
+                }
+                }
+            }
+
+            if (!hasBlockedMessageContent && !hasBlockedMessageAttachment && !hasTopLevelFileIds && !hasBackgroundTrue)
+            {
+                return null;
+            }
+
+            if (hasBlockedMessageContent)
+            {
+                message = "Tool input 'input_file' (or 'file_input') is not permitted.";
+            }
+
+            if (hasBlockedMessageAttachment)
+            {
+                message = message == null
+                    ? "Attachments referencing uploaded files are not permitted."
+                    : message + " Attachments referencing uploaded files are not permitted.";
+            }
+
+            if (hasTopLevelFileIds)
+            {
+                message = message == null
+                    ? "Top-level file references are not permitted."
+                    : message + " Top-level file references are not permitted.";
+            }
+
+            if (hasBackgroundTrue)
+            {
+                message = message == null
+                    ? "Background requests are not permitted."
+                    : message + " Background requests are not permitted.";
+            }
+
+            return message;
+        }" />
+
+        <choose>
+            <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;restrictionMessage&quot;]))">
+                <return-response>
+                    <set-status code="400" reason="Request not allowed" />
+                    <set-body>@((string)context.Variables[&quot;restrictionMessage&quot;])</set-body>
+                </return-response>
+            </when>
+        </choose>
+
         <set-backend-service backend-id="{backend-id}" />
     </inbound>
     <backend>

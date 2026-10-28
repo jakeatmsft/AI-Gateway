@@ -1073,6 +1073,32 @@
     "lastCommitDate": "2026-02-04T13:09:52.740Z"
   },
   {
+    "id": "web-iq",
+    "name": "Microsoft Web IQ Usage Tracking and MCP",
+    "architectureDiagram": "",
+    "categories": [
+      "Knowledge & Tools",
+      "Platform Capabilities"
+    ],
+    "services": [
+      "Microsoft Web IQ",
+      "Azure API Management",
+      "Application Insights",
+      "Log Analytics"
+    ],
+    "shortDescription": "Track Microsoft Web IQ REST and MCP consumption and block Browse at the APIM gateway.",
+    "detailedDescription": "Route Microsoft Web IQ Web Search and streamable HTTP MCP requests through Azure API Management with a caller-provided API key or Microsoft Entra ID authentication, and block Browse REST requests and MCP tool calls before they reach Web IQ. Emit privacy-conscious custom metrics to Application Insights so operators can attribute request volume, MCP tool usage, blocked calls, authentication mode, response status, gateway errors, and latency to individual APIM subscriptions and operations.",
+    "authors": [],
+    "tags": [
+      "Web grounding",
+      "Usage tracking",
+      "Custom metrics",
+      "Model Context Protocol"
+    ],
+    "githubPath": "https://github.com/Azure-Samples/AI-Gateway/tree/main/labs/web-iq",
+    "lastCommitDate": "2026-09-09T15:53:50.281Z"
+  },
+  {
     "id": "zero-to-production",
     "name": "Zero to Production",
     "architectureDiagram": "images/backend-pool-load-balancing.gif",

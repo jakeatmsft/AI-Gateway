@@ -1,0 +1,43 @@
+<policies>
+    <inbound>
+        <base />
+        <authentication-managed-identity resource="https://ai.azure.com" output-token-variable-name="managed-id-access-token" ignore-error="false" />
+        <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["managed-id-access-token"])</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <base />
+        <retry
+            condition="@(
+                context.LastError != null ||
+                (
+                    context.Response != null &&
+                    (
+                        context.Response.StatusCode >= 500 ||
+                        context.Response.StatusCode == 429
+                    )
+                )
+            )"
+            count="2"
+            first-fast-retry="true">
+
+            <choose>
+                <when condition="@(context.Response == null && context.LastError == null)">
+                    <set-backend-service backend-id="primary" />
+                </when>
+                <otherwise>
+                    <set-backend-service backend-id="secondary" />
+                </otherwise>
+            </choose>
+
+            <forward-request />
+        </retry>
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

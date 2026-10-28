@@ -1,0 +1,11 @@
+aiohttp
+azure-ai-voicelive[aiohttp]
+openai
+openai[realtime]
+fastrtc[vad]
+azure-identity
+textual
+numpy
+pyaudio
+pydub
+sounddevice

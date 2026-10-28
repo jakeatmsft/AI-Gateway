@@ -3,11 +3,14 @@
         <base />
         <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
         <set-query-parameter name="subscription-key" exists-action="delete" />
-        <!-- APIM supplies Web IQ credentials; discard caller upstream credentials. -->
-        <set-header name="x-apikey" exists-action="delete" />
-        <set-header name="Authorization" exists-action="delete" />
-        <!-- APIM validates the subscription before this policy runs. Never trust a client team header. -->
-        <set-variable name="web-iq-team" value="@(context.Subscription.Id)" />
+        <set-variable name="web-iq-auth-mode" value="@{
+            if (context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;).StartsWith(&quot;Bearer &quot;, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return &quot;Entra ID&quot;;
+            }
+
+            return string.IsNullOrWhiteSpace(context.Request.Headers.GetValueOrDefault(&quot;x-apikey&quot;, &quot;&quot;)) ? &quot;Missing&quot; : &quot;API key&quot;;
+        }" />
         <set-variable name="web-iq-mcp-tool" value="@{
             if (!string.Equals(context.Operation.Id, &quot;mcp-post&quot;, System.StringComparison.OrdinalIgnoreCase))
             {
@@ -17,17 +20,12 @@
             try
             {
                 var requestBody = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
-                if (requestBody == null || (string)requestBody[&quot;jsonrpc&quot;] != &quot;2.0&quot;)
+                if (!string.Equals((string)requestBody[&quot;method&quot;], &quot;tools/call&quot;, System.StringComparison.OrdinalIgnoreCase))
                 {
-                    return &quot;invalid&quot;;
+                    return &quot;protocol&quot;;
                 }
-                var method = (string)requestBody[&quot;method&quot;];
-                if (method != &quot;tools/call&quot;)
-                {
-                    return new [] { &quot;initialize&quot;, &quot;ping&quot;, &quot;tools/list&quot;, &quot;notifications/initialized&quot;, &quot;notifications/cancelled&quot; }.Contains(method) ? &quot;protocol&quot; : &quot;invalid&quot;;
-                }
-                /* Exact tool names are required by MCP. Unknown tools cannot bypass the allowlist. */
-                var toolName = (string)requestBody.SelectToken(&quot;params.name&quot;) ?? &quot;unknown&quot;;
+
+                var toolName = ((string)requestBody.SelectToken(&quot;params.name&quot;) ?? &quot;unknown&quot;).ToLowerInvariant();
                 if (toolName == &quot;web&quot; || toolName == &quot;videos&quot; || toolName == &quot;browse&quot; || toolName == &quot;news&quot; || toolName == &quot;images&quot;)
                 {
                     return toolName;
@@ -37,43 +35,21 @@
             }
             catch
             {
-                /* Reject malformed JSON and JSON-RPC batches rather than forwarding uninspected calls. */
-                return &quot;invalid&quot;;
+                return &quot;protocol&quot;;
             }
         }" />
-        <set-variable name="web-iq-operation" value="@{
-            if (context.Operation.Id == &quot;search-web&quot;) { return &quot;web&quot;; }
-            if (context.Operation.Id == &quot;browse-url&quot;) { return &quot;browse&quot;; }
-            if (context.Operation.Id == &quot;mcp-post&quot;) { return (string)context.Variables[&quot;web-iq-mcp-tool&quot;]; }
-            return &quot;protocol&quot;;
-        }" />
         <emit-metric name="Web IQ Requests" value="1" namespace="web-iq">
-            <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+            <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
-            <dimension name="Authentication" value="{web-iq-authentication-label}" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
             <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
         </emit-metric>
         <choose>
-            <when condition="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;] == &quot;invalid&quot;)">
-                <return-response>
-                    <set-status code="400" reason="Bad Request" />
-                    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
-                    <set-header name="x-apim-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
-                    <set-header name="x-content-safety-status" exists-action="override"><value>not-applicable</value></set-header>
-                    <set-body>{"errorCode":"InvalidMcpRequest","userMessage":"Send one JSON-RPC 2.0 message using an allowed MCP method. Batches are unsupported."}</set-body>
-                </return-response>
-            </when>
-            <when condition="@{
-                var operation = (string)context.Variables[&quot;web-iq-operation&quot;];
-                if (operation == &quot;protocol&quot;) { return false; }
-                var allowed = &quot;{web-iq-allowed-operations}&quot;.Split(',');
-                var denied = &quot;{web-iq-denied-operations}&quot;.Split(',');
-                return !allowed.Contains(operation) || denied.Contains(operation);
-            }">
+            <when condition="@(context.Operation.Id == &quot;browse-url&quot; || (string)context.Variables[&quot;web-iq-mcp-tool&quot;] == &quot;browse&quot;)">
                 <emit-metric name="Web IQ Blocked Requests" value="1" namespace="web-iq">
-                    <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+                    <dimension name="Subscription ID" />
                     <dimension name="Operation ID" />
-                    <dimension name="Authentication" value="{web-iq-authentication-label}" />
+                    <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
                     <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
                 </emit-metric>
                 <return-response>
@@ -87,9 +63,32 @@
                     <set-header name="x-content-safety-status" exists-action="override">
                         <value>not-applicable</value>
                     </set-header>
-                    <set-body>{"errorCode":"WebIqOperationBlocked","errorCategory":"UserError","userMessage":"This Web IQ operation is disabled by the gateway allow/deny policy."}</set-body>
+                    <set-body>{"errorCode":"BrowseOperationBlocked","errorCategory":"UserError","userMessage":"The Browse operation and MCP tool are disabled by the API Management policy."}</set-body>
                 </return-response>
             </when>
+        </choose>
+        <choose>
+            <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Entra ID&quot;)">
+                <set-header name="x-apikey" exists-action="delete" />
+            </when>
+            <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Missing&quot;)">
+                <return-response>
+                    <set-status code="401" reason="Unauthorized" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="x-apim-request-id" exists-action="override">
+                        <value>@(context.RequestId.ToString())</value>
+                    </set-header>
+                    <set-header name="x-content-safety-status" exists-action="override">
+                        <value>not-applicable</value>
+                    </set-header>
+                    <set-body>{"errorCode":"WebIqAuthenticationRequired","errorCategory":"UserError","userMessage":"Provide a Web IQ x-apikey header or Entra ID bearer token."}</set-body>
+                </return-response>
+            </when>
+            <otherwise>
+                <set-header name="Authorization" exists-action="delete" />
+            </otherwise>
         </choose>
         <choose>
             <when condition="@(context.Operation.Id == &quot;mcp-get&quot;)">
@@ -113,29 +112,10 @@
                 </return-response>
             </when>
         </choose>
-        <!-- One shared counter per validated team across REST and MCP, with separate rate/quota keys. -->
-        <rate-limit-by-key calls="{web-iq-requests-per-minute}" renewal-period="60"
-            counter-key="@(&quot;web-iq:rate:&quot; + context.Api.Id + &quot;:&quot; + (string)context.Variables[&quot;web-iq-team&quot;])"
-            remaining-calls-header-name="x-web-iq-rate-limit-remaining" />
-        <choose>
-            <when condition="@((string)context.Variables[&quot;web-iq-operation&quot;] != &quot;protocol&quot;)">
-                <quota-by-key calls="{web-iq-daily-quota}" renewal-period="86400"
-                    counter-key="@(&quot;web-iq:quota:&quot; + context.Api.Id + &quot;:&quot; + (string)context.Variables[&quot;web-iq-team&quot;])"
-                    first-period-start="2026-01-01T00:00:00Z" />
-            </when>
-        </choose>
-        {web-iq-authentication-policy}
         <set-header name="Accept-Encoding" exists-action="override">
             <value>identity</value>
         </set-header>
         <set-backend-service backend-id="web-iq-backend" />
-        <!-- Count attempts only after local permissions, credentials, and limits pass. -->
-        <emit-metric name="Web IQ Upstream Requests" value="1" namespace="web-iq">
-            <dimension name="Team" value="@((string)context.Variables[&quot;web-iq-team&quot;])" />
-            <dimension name="Operation ID" />
-            <dimension name="Authentication" value="{web-iq-authentication-label}" />
-            <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
-        </emit-metric>
     </inbound>
     <backend>
         <forward-request buffer-response="true" />
@@ -144,16 +124,16 @@
         <base />
         <include-fragment fragment-id="web-iq-content-safety" />
         <emit-metric name="Web IQ Responses" value="1" namespace="web-iq">
-            <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+            <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
-            <dimension name="Authentication" value="{web-iq-authentication-label}" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
             <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
             <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
         </emit-metric>
         <emit-metric name="Web IQ Latency" value="@(context.Elapsed.TotalMilliseconds)" namespace="web-iq">
-            <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+            <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
-            <dimension name="Authentication" value="{web-iq-authentication-label}" />
+            <dimension name="Authentication" value="@((string)context.Variables[&quot;web-iq-auth-mode&quot;])" />
             <dimension name="MCP Tool" value="@((string)context.Variables[&quot;web-iq-mcp-tool&quot;])" />
             <dimension name="Status Code" value="@(context.Response.StatusCode.ToString())" />
         </emit-metric>
@@ -163,29 +143,15 @@
     </outbound>
     <on-error>
         <base />
-        <set-header name="x-apim-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
-        <set-header name="x-content-safety-status" exists-action="override"><value>not-applicable</value></set-header>
-        <choose>
-            <when condition="@(context.LastError.Reason == &quot;RateLimitExceeded&quot; || context.LastError.Reason == &quot;QuotaExceeded&quot;)">
-                <!-- Keep APIM's native 429 (rate) / 403 (quota) and Retry-After header. -->
-                <set-header name="x-web-iq-limit" exists-action="override"><value>@(context.LastError.Reason)</value></set-header>
-                <emit-metric name="Web IQ Throttled Requests" value="1" namespace="web-iq">
-                    <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
-                    <dimension name="Operation ID" />
-                    <dimension name="MCP Tool" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;web-iq-mcp-tool&quot;, &quot;N/A&quot;))" />
-                    <dimension name="Limit" value="@(context.LastError.Reason)" />
-                </emit-metric>
-            </when>
-        </choose>
         <emit-metric name="Web IQ Gateway Errors" value="1" namespace="web-iq">
-            <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+            <dimension name="Subscription ID" />
             <dimension name="Operation ID" />
             <dimension name="MCP Tool" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;web-iq-mcp-tool&quot;, &quot;N/A&quot;))" />
         </emit-metric>
         <choose>
             <when condition="@(context.Variables.ContainsKey(&quot;web-iq-safety-start&quot;))">
                 <emit-metric name="Web IQ Content Safety Responses" value="1" namespace="web-iq">
-                    <dimension name="Team" value="@(context.Subscription == null ? &quot;unattributed&quot; : context.Subscription.Id)" />
+                    <dimension name="Subscription ID" />
                     <dimension name="Operation ID" />
                     <dimension name="Content Safety Status" value="error" />
                 </emit-metric>

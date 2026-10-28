@@ -1,0 +1,244 @@
+{
+    "id": "resp_04856f3c5fe850a9016aac2130bc208197aa58792974a4423e",
+    "object": "response",
+    "created_at": 1789665584,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1789665593,
+    "content_filters": [{
+            "blocked": false,
+            "source_type": "prompt",
+            "content_filter_raw": [],
+            "content_filter_results": {
+                "indirect_attack": {
+                    "detected": false,
+                    "filtered": false
+                },
+                "defender_for_ai": {
+                    "detected": false,
+                    "filtered": false,
+                    "details": {}
+                },
+                "hate": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "sexual": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "violence": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "self_harm": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "jailbreak": {
+                    "detected": false,
+                    "filtered": false
+                }
+            },
+            "content_filter_offsets": {
+                "start_offset": 0,
+                "end_offset": 19468,
+                "check_offset": 0
+            }
+        },
+        {
+            "blocked": false,
+            "source_type": "completion",
+            "content_filter_raw": [],
+            "content_filter_results": {
+                "protected_material_code": {
+                    "detected": false,
+                    "filtered": false
+                },
+                "protected_material_text": {
+                    "detected": false,
+                    "filtered": false
+                },
+                "defender_for_ai": {
+                    "detected": false,
+                    "filtered": false,
+                    "details": {}
+                },
+                "hate": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "sexual": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "violence": {
+                    "filtered": false,
+                    "severity": "safe"
+                },
+                "self_harm": {
+                    "filtered": false,
+                    "severity": "safe"
+                }
+            },
+            "content_filter_offsets": {
+                "start_offset": 0,
+                "end_offset": 2765,
+                "check_offset": 0
+            }
+        }
+    ],
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.6-terra",
+    "moderation": null,
+    "output": [{
+            "id": "ws_04856f3c5fe850a9016aac21319e848197a28631ea2bf52728",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "queries": [
+                    "site:youtube.com AI advancements 2026",
+                    "site:youtube.com artificial intelligence breakthroughs 2025 2026 official research",
+                    "site:youtube.com AI advancements explained DeepMind OpenAI NVIDIA"
+                ],
+                "query": "site:youtube.com AI advancements 2026"
+            }
+        },
+        {
+            "id": "rs_04856f3c5fe850a9016aac21332cbc819791925b820fe4b309",
+            "type": "reasoning",
+            "content": [],
+            "encrypted_content": "gAAAAABqrCE5muWzUUximzvWY-gnNIObFwKWkpUkcJ9fVSSTbl7AxLa9p5e-w35tgYp6nPVPK2cR0Su2I32cJ5NTIBgESPPTgDhnN11Ga83JRX8wnnMSwT8uY7gdavp1qyZLbVMCMt0gmSOPPyV4Yoz_lDMNtnlyzNTqqMSshp8BgdaGCFGNWuXGQ3ZZxcSFgdgZW7bTzilo4KqLzhB2TRyYPNUcSOYBv3Kp8wxuQ-oP-uB2_1oYH8gswp9Xaf8T5bTO4sxKxK7FVRNXAA9Hadinf_2H3UOfIeaisNgaejInl2m8YDi846i_q9t2_-pmxG-XyXCRiH8XXbd0Is9KCwcX0oA0vizDilfmwzziRrYcPbzu6bpnjPc94VkIcT-eWG2lc6T-g4U_OT4Lr-5Ek6Ohale99x5f2qxBTWUciDNXmK-AkhpTIaeTCmJOUs24VYJrU0EkHcoU6bQm8bQmldj9yi_NZeiaJHqwuwGD-E_ZdC5FmIcdv1dwHACQgw7RKfjqgcRVuiiDydEAANhbTzaVxJ5zxWOHcPgStgzhDYiQ9t4BQTH8P_HnxPNC2OMUqYFu9oAPdrBnDVWlyvy-ljGkBZ3qMFO7g8zHETvCOZvbQHBCEwOLx8WShwnnJOsioKt92fSYL7iwtZwTzwaqvauopeXdwgep6gBkiQ6e3YBbP2PzSE9q0SZU0jTUbz4zwNmDIiiFh37qhtezM3GdwgYg0cai9G40IyFqoRoK5D8pk-cTEPrgUgLsBouxkQypZkecgIEX8MxlCTtatD1N71p4kowQA_u-cjPmJ52IFJS8I9Z1VOx_EVabGjPEXAnKmsPXFcvIi4Ywt51lF8zsfdsf14gFcB17enWAO7VRNMoXp4JN4e8iJVwhtrk5H1uSpngRW5ogFEK_wZueqo_SlCdQHK5fU5K3mXecO7HQi19J87FJYMALjQ5zwCinmqwmMIc3KLH6ENI-tL17lc2ByVzM6-oT5QFwGOvVlpVuR9vRgL8XvF-hvApDGP-foo7UfYfkRRwPZgCW0lls6npo8Cy23ccXmIJ5NWWawz9VJa4RlHDgjUAbB3iRUK6GEHcNBYR7QSAJillm7gRoIPTFsn2kSdIdy_mbHhmWJ7MO7C_8sSbVNb4exdqpczBXnGblj_sCU5sQvME2kRYLxI5My70bTnoxVwmjPMd0dM9X1kETwNwRL5SKMT9cYjv8F_QFv0V-HO9DWbFMVQvEAmVHFJhtxxoxxcl2muNtGKYndpZPkB5mW36ygI4=",
+            "summary": []
+        },
+        {
+            "id": "ws_04856f3c5fe850a9016aac21336ec48197b2721433afb40d33",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "queries": [
+                    "YouTube AI advancements 2026",
+                    "YouTube artificial intelligence breakthroughs 2025",
+                    "YouTube DeepMind AI research advances"
+                ],
+                "query": "YouTube AI advancements 2026"
+            }
+        },
+        {
+            "id": "rs_04856f3c5fe850a9016aac2134b4d48197bb696903ba52b486",
+            "type": "reasoning",
+            "content": [],
+            "encrypted_content": "gAAAAABqrCE5IXi26JWjUuE40zvnPpM-a0iEwCAT98jRbbZZoe-cz6n7CWBtgwcw6zxXtDrXPENxVE51MK_YXO3-5d1kJMTWo58DlFzzy0nU36FrQoAGcpuzW_bMV3K0NypdsaNwT3mjyC154vW5fN5vd7cBXU-upJSdW-DSMKwAM1GKxd5z8oFaGBnQvx9lS2p2qrpenm3TlT5f31MUza05kpvJywM2T4DjMWzs7Ft9zfdkd0NEkh-eMJX0jmVh_Xuz-3ml3xAVDu2BnohzWHQAqhIjYo_32wUOJ1OJlDaH-i33V8cO4n68GQI2YzPngu2pG3abHSQaR5c9Jb-6x6tVDheCYuxiBApM08df43AYi3xhUnIypSPq2QeZ75GhRWlaK2Xtmb8VoM35ucpkt2RMg4G2yBpYlY9ma3ezrHprApHLUe4h9ku3GimaiJEY_vu_JEqEq56Aw5AsavVFj57EAlR6r2bDVyY-19-ScJ8OdL7lEEPEs0sojvO0dJWZ_K6H_G-77vGrEj7wyMDC2-Uj0a_aQQrjUvLIJHZDUzIbriG7eNAvXVFkt74nAu9gUVnUjBNbGgHjEV5xD3r1P4JBGMcaB46WkE3Hh1bAu8dKjsoiicF-gbvxU5BS77PvvGeatbUO8MGWkN5lfmxDaWmcaq6w7jfJFhr59ky9y7duFiGZxLwllEK7E9uNZ-voEKpKCYJcskLpdd5bhxP0s2kx_g5RulppV9Tz2TTPDWSIKVWEosc_PEtIfl6pRKzq4mSY_dKleTRBak7iG5eDUkgMfzxDMtxR7jghfzDWMIRbkCGYLZGDfSVw2n4fP-VALvaRoXIHjRq22RzntyPEMxUabKQRc_p-wcDdiZ7L7vZUbKDH6vFLgrZ_Ac_Ua9NA95W2OMgEbDaXULPKJyCWFWfZ1P-aFa3t2SjoXhjQQTKk5xLr05IVwwwMcxY7gk_BwsSMIGNDU9q7FKEqNePbKgUgsEXMjkQu8zyOivTpz92ODy74-m1X6SwpwWoq_d42rWxyShHUr4NtAZTZi9lFVfv9nreySP9VdwN44r8J2cTMyGsShWb_RCsp-xWObpT6fPYmetQg5DxXWPR_pFueVvDFVo1oH95nUp0WSpinokI2XGA9RqP9DPpg0hFuChvmn8P3IVR7jvoPyfoDBQhESHuJlsRRc2EdFOWzUyDFqoJLzY-rmRC_mm6PiuyaNnNuMS5NLwUYSvTYSxolyeK2qEJaLtvxcX66zhO8YOHf6Jj-uZmXZSXWWb-hT6NdKTfjbvRuHYdSxn6evmt89U8eeXrHI4xe3n_WI96HriBwEGQr6DiSoBoJp-8mAqTEefuupJL3cGjZm4vnA9-BQervQfIXpu44fURvhYDyfVXbAcB5_zfRRpN_o6bn25TfK0ghqWGZ-IwMYYLtykDakoPMvq-BFi7nAkRCVI_9o301Vb3PqF8VOVGgV-GEshQ2K6j3L_vOC5Q2iqf9X2Lj8HGo8Bn_UUQZ_3BnqyJZWHBf50mWT2RMZwQomMVXW7zGQtnvP5BCq-s7PE3aknLXcB0C5pMXTlOWJRB9NyPMtGO6tsOdsxlwToB72EAN2ua0wbAPxEc39upyabelsKfQCx7jjmc7Tb7iM7tXFGn_7xwy-29rElF5MUjjMaXrwIAEknjZKvxjhhK-EITfbOpPgGhOdv3EfppmtUodQVCrYnZVjNNJZS8t5QkHy6t4EZQh7CfI8r6DAIiP39FFJdw1pJqnQJi_Gl1Xx3rLmLr1zNlAHgbonz801nAhxy0CMUcsOGe1gj5vkqhu-LwEKlMvMl81J1Z5kNoTkO9ttgrHPgA9KRvXWARRj7fLAk7gEEu6vZNXnPN_OmVjMB4SuYfdtGl8LiOLCnJr6u_LlODi9zU4dbtKSyYia7Dij7kb2yJqKDMd_gF_MMn7eQKqgTIUy-nsrtCub6Y2MgWGjysPNQyro8OABn3lwGwYvZPvuAUThoo9TN29_KuqHPU250aXqkQLJabbMnih2nNw9KYpRJ3w9SYfGJ-iwdqZWHbXs1LWZgT_RsNGQWZajgseC9PhyF1iTn3tfUCodsumxkEWk2dvgAzy9zsO3NyE_z8oCLMpKU9tLqfIOnWUN0Yp5I7HjwKdBfoOhJdFPHsR7X9WJQ7O37YPr8c9V8B8eFN9cTxW-jvx__QYmff7DF51G8V7L8qpkZKNfrw0_cengnWRDoQFfroRyDL8TFaaKBC-geK1XCuSmrEitjziZL16xNMuGRDQv_LhYjLL-tfLvCzNpfxC6cEjibWN9A2dXVLTL09F2iTL8OPgTY4IBGUi",
+            "summary": []
+        },
+        {
+            "id": "msg_04856f3c5fe850a9016aac21366df08197b952c5d684cc2047",
+            "type": "message",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "Here are YouTube searches that should surface strong, recent videos on AI advancements:\n\n- **Latest AI breakthroughs**  \n  https://www.youtube.com/results?search_query=latest+AI+breakthroughs\n\n- **Google DeepMind research and demos**  \n  https://www.youtube.com/results?search_query=Google+DeepMind+latest+AI+research\n\n- **OpenAI product and research updates**  \n  https://www.youtube.com/results?search_query=OpenAI+latest+AI+research+and+updates\n\n- **NVIDIA AI advances\u2014chips, robotics, and agents**  \n  https://www.youtube.com/results?search_query=NVIDIA+latest+AI+advancements\n\n- **AI agents and autonomous workflows**  \n  https://www.youtube.com/results?search_query=AI+agents+latest+advances+explained\n\n- **AI in science: biology, medicine, and materials**  \n  https://www.youtube.com/results?search_query=AI+advancements+science+medicine+biology\n\n- **Humanoid robots and embodied AI**  \n  https://www.youtube.com/results?search_query=humanoid+robots+AI+advancements\n\nFor more reliable coverage, prioritize videos from **Google DeepMind, OpenAI, NVIDIA, Stanford HAI, MIT, Two Minute Papers,** and **Yannic Kilcher**. Filter YouTube results by **Upload date** to see the newest developments."
+            }],
+            "phase": "final_answer",
+            "role": "assistant"
+        }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+        "context": "all_turns",
+        "effort": "medium",
+        "mode": "standard",
+        "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+        "format": {
+            "type": "text"
+        },
+        "verbosity": "medium"
+    },
+    "tool_choice": {
+        "type": "web_search_preview"
+    },
+    "tool_usage": {
+        "image_gen": {
+            "input_tokens": 0,
+            "input_tokens_details": {
+                "image_tokens": 0,
+                "text_tokens": 0
+            },
+            "output_tokens": 0,
+            "output_tokens_details": {
+                "image_tokens": 0,
+                "text_tokens": 0
+            },
+            "total_tokens": 0
+        },
+        "web_search": {
+            "num_requests": 6
+        }
+    },
+    "tools": [{
+        "type": "web_search",
+        "filters": {
+            "blocked_domains": [
+                "youtube.com",
+                "tiktok.com",
+                "huggingface.co",
+                "facebook.com",
+                "x.ai",
+                "spotify.com",
+                "pinterest.com",
+                "perplexity.ai",
+                "netflix.com",
+                "weebly.com",
+                "repo.maven.apache.org"
+            ]
+        },
+        "return_token_budget": "default",
+        "search_content_types": [
+            "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+            "type": "approximate",
+            "city": null,
+            "country": "US",
+            "region": null,
+            "timezone": null
+        }
+    }],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+        "input_tokens": 4510,
+        "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 4108
+        },
+        "output_tokens": 610,
+        "output_tokens_details": {
+            "reasoning_tokens": 309
+        },
+        "total_tokens": 5120
+    },
+    "user": null,
+    "metadata": {}
+}

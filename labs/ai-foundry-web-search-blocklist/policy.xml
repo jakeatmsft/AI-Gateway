@@ -1,0 +1,270 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- Inspect a preserved copy. Requests without web_search never enter the blocklist branch. -->
+        <choose>
+            <when condition="@{
+                if (context.Request.Method != &quot;POST&quot; || context.Request.Body == null)
+                {
+                    return false;
+                }
+                JObject body;
+                try
+                {
+                    body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+                var tools = body?[&quot;tools&quot;] as JArray;
+                if (tools == null)
+                {
+                    return false;
+                }
+                foreach (var item in tools)
+                {
+                    var tool = item as JObject;
+                    if (tool?[&quot;type&quot;]?.Type == JTokenType.String &amp;&amp; (string)tool[&quot;type&quot;] == &quot;web_search&quot;)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }">
+                <!-- Reject malformed filters rather than replace caller-supplied values. -->
+                <set-variable name="web-search-validation-error" value="@{
+                    var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                    foreach (var item in (JArray)body[&quot;tools&quot;])
+                    {
+                        var tool = item as JObject;
+                        if (tool?[&quot;type&quot;]?.Type != JTokenType.String || (string)tool[&quot;type&quot;] != &quot;web_search&quot;)
+                        {
+                            continue;
+                        }
+                        var filtersToken = tool[&quot;filters&quot;];
+                        if (filtersToken == null || filtersToken.Type == JTokenType.Null)
+                        {
+                            continue;
+                        }
+                        var filters = filtersToken as JObject;
+                        if (filters == null)
+                        {
+                            return &quot;web_search.filters must be an object or null.&quot;;
+                        }
+                        var blockedToken = filters[&quot;blocked_domains&quot;];
+                        if (blockedToken == null || blockedToken.Type == JTokenType.Null)
+                        {
+                            continue;
+                        }
+                        var blocked = blockedToken as JArray;
+                        if (blocked == null)
+                        {
+                            return &quot;web_search.filters.blocked_domains must be an array of strings or null.&quot;;
+                        }
+                        foreach (var domain in blocked)
+                        {
+                            if (domain.Type != JTokenType.String)
+                            {
+                                return &quot;web_search.filters.blocked_domains must contain only strings.&quot;;
+                            }
+                        }
+                    }
+                    return &quot;&quot;;
+                }" />
+                <choose>
+                    <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;web-search-validation-error&quot;]))">
+                        <return-response>
+                            <set-status code="400" reason="Invalid web-search filters" />
+                            <set-header name="Content-Type" exists-action="override">
+                                <value>application/json</value>
+                            </set-header>
+                            <set-header name="x-response-request-id" exists-action="override">
+                                <value>@(context.RequestId.ToString())</value>
+                            </set-header>
+                            <set-header name="x-response-metrics" exists-action="override">
+                                <value>{"web_search_count":null,"total_tokens":null}</value>
+                            </set-header>
+                            <set-header name="x-response-metrics-status" exists-action="override">
+                                <value>unavailable</value>
+                            </set-header>
+                            <set-body>@{
+                                return new JObject(
+                                    new JProperty("error", new JObject(
+                                        new JProperty("code", "invalid_web_search_filters"),
+                                        new JProperty("message", (string)context.Variables["web-search-validation-error"])
+                                    ))
+                                ).ToString();
+                            }</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+                <set-body>@{
+                    var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                    var requiredDomains = new string[] { {organization-blocked-domain-literals} };
+                    foreach (var item in (JArray)body["tools"])
+                    {
+                        var tool = item as JObject;
+                        if (tool?["type"]?.Type != JTokenType.String || (string)tool["type"] != "web_search")
+                        {
+                            continue;
+                        }
+                        var filters = tool["filters"] as JObject;
+                        if (filters == null)
+                        {
+                            filters = new JObject();
+                            tool["filters"] = filters;
+                        }
+                        var blocked = filters["blocked_domains"] as JArray;
+                        if (blocked == null)
+                        {
+                            blocked = new JArray();
+                            filters["blocked_domains"] = blocked;
+                        }
+                        foreach (var domain in requiredDomains)
+                        {
+                            bool exists = false;
+                            foreach (var existing in blocked)
+                            {
+                                if (string.Equals((string)existing, domain, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists)
+                            {
+                                blocked.Add(domain);
+                            }
+                        }
+                    }
+                    return body.ToString(Newtonsoft.Json.Formatting.None);
+                }</set-body>
+            </when>
+        </choose>
+        <!-- main.bicep replaces these placeholders for the selected Foundry backend. -->
+        <set-header name="api-key" exists-action="delete" />
+        <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+        <set-query-parameter name="subscription-key" exists-action="delete" />
+        <set-header name="x-response-request-id" exists-action="override">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+        <set-variable name="response-is-streaming" value="@{
+            try {
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                return body?[&quot;stream&quot;]?.Type == JTokenType.Boolean &amp;&amp; (bool)body[&quot;stream&quot;];
+            } catch (Exception) { return false; }
+        }" />
+        {backend-routing}
+    </inbound>
+    <backend>
+        <!-- This API owns its single backend call and relays SSE chunks immediately. -->
+        <forward-request timeout="180" buffer-response="false" />
+    </backend>
+    <outbound>
+        <base />
+        <set-header name="x-response-request-id" exists-action="override">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+        <set-header name="x-response-metrics" exists-action="delete" />
+        <set-header name="x-response-metrics-status" exists-action="delete" />
+        <!-- Remove legacy upstream headers; all metrics use the JSON map below. -->
+        <set-header name="x-web-search-count" exists-action="delete" />
+        <set-header name="x-web-search-count-status" exists-action="delete" />
+        <!-- Keep body-reading expressions in a separate policy branch. APIM can
+             prefetch a body before evaluating an expression that references it,
+             even when the expression would return early for SSE. -->
+        <choose>
+            <when condition="@(string.Equals(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim(), &quot;text/event-stream&quot;, StringComparison.OrdinalIgnoreCase))">
+                <set-header name="x-response-metrics-status" exists-action="override">
+                    <value>@(context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300 ? "deferred" : "unavailable")</value>
+                </set-header>
+            </when>
+            <otherwise>
+                <!-- JSON goes directly to Foundry; inspect usage without rewriting the response. -->
+                <set-header name="x-response-redaction" exists-action="override"><value>skipped</value></set-header>
+                <set-variable name="web-search-count" value="@{
+                    if (context.Response.StatusCode &lt; 200 || context.Response.StatusCode &gt;= 300)
+                    {
+                        return -1L;
+                    }
+                    var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim();
+                    if (context.Response.Body == null) { return -1L; }
+                    if (!string.Equals(contentType, &quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return -1L;
+                    }
+                    try
+                    {
+                        /* Read the service-reported count only in the non-SSE branch. */
+                        var response = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                        var toolUsage = response[&quot;tool_usage&quot;] as JObject;
+                        var webSearch = toolUsage?[&quot;web_search&quot;] as JObject;
+                        var count = webSearch?[&quot;num_requests&quot;];
+                        if (count?.Type != JTokenType.Integer) { return -1L; }
+                        var total = (long)count;
+                        return total &gt;= 0 &amp;&amp; total &lt;= 1000000000000000000L ? total : -1L;
+                    }
+                    catch (Exception)
+                    {
+                        /* Accounting must not turn an otherwise valid backend response into a 500. */
+                        return -1L;
+                    }
+                }" />
+                <!-- Match the current proxy registry: web_search_count and total_tokens.
+                     Keep JSON body reads inside this non-SSE branch. -->
+                <set-variable name="response-metrics" value="@{
+                    var metrics = new JObject(
+                        new JProperty(&quot;web_search_count&quot;, JValue.CreateNull()),
+                        new JProperty(&quot;total_tokens&quot;, JValue.CreateNull()));
+                    var count = (long)context.Variables[&quot;web-search-count&quot;];
+                    if (count &gt;= 0) { metrics[&quot;web_search_count&quot;] = count; }
+                    var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Split(';')[0].Trim();
+                    if (context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300
+                        &amp;&amp; string.Equals(contentType, &quot;application/json&quot;, StringComparison.OrdinalIgnoreCase)
+                        &amp;&amp; context.Response.Body != null)
+                    {
+                        try
+                        {
+                            var response = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                            var tokens = response?[&quot;usage&quot;]?[&quot;total_tokens&quot;];
+                            if (tokens?.Type == JTokenType.Integer)
+                            {
+                                var total = (long)tokens;
+                                if (total &gt;= 0 &amp;&amp; total &lt;= 1000000000000000000L)
+                                {
+                                    metrics[&quot;total_tokens&quot;] = total;
+                                }
+                            }
+                        }
+                        catch (Exception) { /* Missing usage must not discard a known search count. */ }
+                    }
+                    return metrics.ToString(Newtonsoft.Json.Formatting.None);
+                }" />
+                <set-header name="x-response-metrics" exists-action="override">
+                    <value>@((string)context.Variables["response-metrics"])</value>
+                </set-header>
+                <set-header name="x-response-metrics-status" exists-action="override">
+                    <value>@{
+                        var metrics = JObject.Parse((string)context.Variables["response-metrics"]);
+                        var available = 0;
+                        foreach (var metric in metrics.Properties()) {
+                            if (metric.Value.Type != JTokenType.Null) { available++; }
+                        }
+                        return available == 0 ? "unavailable" : (available == metrics.Count ? "reported" : "partial");
+                    }</value>
+                </set-header>
+            </otherwise>
+        </choose>
+    </outbound>
+    <on-error>
+        <base />
+        <set-header name="x-response-request-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
+        <set-header name="x-response-metrics" exists-action="override">
+            <value>{"web_search_count":null,"total_tokens":null}</value>
+        </set-header>
+        <set-header name="x-response-metrics-status" exists-action="override"><value>unavailable</value></set-header>
+        <set-header name="x-web-search-count" exists-action="delete" />
+        <set-header name="x-web-search-count-status" exists-action="delete" />
+    </on-error>
+</policies>

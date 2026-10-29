@@ -4,7 +4,7 @@
         <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
         <set-query-parameter name="subscription-key" exists-action="delete" />
         <set-variable name="web-iq-auth-mode" value="@{
-            if (context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;).StartsWith(&quot;Bearer &quot;, System.StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(&quot;{web-iq-auth-mode}&quot;, &quot;entra&quot;, System.StringComparison.OrdinalIgnoreCase))
             {
                 return &quot;Entra ID&quot;;
             }
@@ -70,6 +70,14 @@
         <choose>
             <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Entra ID&quot;)">
                 <set-header name="x-apikey" exists-action="delete" />
+                <!-- Use APIM's system-assigned identity. Web IQ's scope is
+                     https://api.microsoft.ai/.default; this policy takes the resource audience.
+                     https://learn.microsoft.com/en-us/azure/api-management/authentication-managed-identity-policy#examples
+                     https://learn.microsoft.com/en-us/web-iq/get-started/authentication -->
+                <authentication-managed-identity resource="https://api.microsoft.ai" output-token-variable-name="web-iq-access-token" ignore-error="false" />
+                <set-header name="Authorization" exists-action="override">
+                    <value>@("Bearer " + (string)context.Variables["web-iq-access-token"])</value>
+                </set-header>
             </when>
             <when condition="@((string)context.Variables[&quot;web-iq-auth-mode&quot;] == &quot;Missing&quot;)">
                 <return-response>
@@ -83,7 +91,7 @@
                     <set-header name="x-content-safety-status" exists-action="override">
                         <value>not-applicable</value>
                     </set-header>
-                    <set-body>{"errorCode":"WebIqAuthenticationRequired","errorCategory":"UserError","userMessage":"Provide a Web IQ x-apikey header or Entra ID bearer token."}</set-body>
+                    <set-body>{"errorCode":"WebIqAuthenticationRequired","errorCategory":"UserError","userMessage":"Provide a Web IQ x-apikey header. This gateway is configured for API-key authentication."}</set-body>
                 </return-response>
             </when>
             <otherwise>

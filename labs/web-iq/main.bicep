@@ -14,6 +14,13 @@ param webIqApiPath string = 'web-iq'
 @description('Microsoft Web IQ v3 service URL.')
 param webIqServiceUrl string = 'https://api.microsoft.ai/v3'
 
+@description('Web IQ backend authentication: forward the caller API key or acquire a token with the APIM system-assigned managed identity.')
+@allowed([
+  'apikey'
+  'entra'
+])
+param webIqAuthMode string = 'apikey'
+
 @description('Azure region for the Content Safety text moderation resource.')
 param contentSafetyLocation string = resourceGroup().location
 
@@ -151,7 +158,7 @@ resource webIqApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-06-0
   parent: webIqApi
   properties: {
     format: 'rawxml'
-    value: loadTextContent('policy.xml')
+    value: replace(loadTextContent('policy.xml'), '{web-iq-auth-mode}', webIqAuthMode)
   }
   dependsOn: [
     webIqBackend
@@ -195,7 +202,9 @@ resource webIqApiDiagnostics 'Microsoft.ApiManagement/service/apis/diagnostics@2
 output logAnalyticsWorkspaceId string = lawModule.outputs.customerId
 output applicationInsightsName string = appInsightsModule.outputs.name
 output apimServiceId string = apimModule.outputs.id
+output apimManagedIdentityPrincipalId string = apimModule.outputs.principalId
 output apimResourceGatewayURL string = apimModule.outputs.gatewayUrl
 output apimSubscriptions array = apimModule.outputs.apimSubscriptions
 output webIqApiPath string = webIqApiPath
+output webIqAuthMode string = webIqAuthMode
 output contentSafetyEndpoint string = contentSafetyResource.properties.endpoint

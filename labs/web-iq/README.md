@@ -44,28 +44,6 @@ Redeploy `main.bicep` to install gateway enforcement. APIM injects `scopeName=We
 
 The reference sample documents REST scope consumption. MCP must also accept the injected arguments and return confirmation in `structuredContent.scopeApplied` or a JSON text block's `scopeApplied`. If the upstream MCP implementation does not support this, scoped MCP searches fail closed; use scoped REST searches until that support is available. The Responses API notebook inherits the same gateway enforcement.
 
-#### What `scopeApplied: true` means
-
-The Web IQ [Create scopes guide — Interpret the results](https://learn.microsoft.com/en-us/web-iq/guides/create-scopes#interpret-the-results) defines `scopeApplied` as the outcome of applying the requested named source filter. When Web IQ finds and applies that scope, it returns `"scopeApplied": true`. This is a response field from Web IQ, not a client option or an OAuth permission. A valid scoped search can return zero results; an empty result set does not indicate failure.
-
-| Web IQ response field | Product meaning | Lab behavior for a successful retrieval response |
-| --- | --- | --- |
-| `scopeApplied: true` | The requested scope was found and applied to this request. | Passes the scope check; the response still goes through Content Safety processing. |
-| `scopeApplied: false` | The scope was not applied. The guide documents unscoped search when `failOnMissingScope=false` and the scope cannot be found. | Withholds results and returns `502 ScopeApplicationUnconfirmed`. |
-| Field absent or `null` | No affirmative application outcome is available. Absence is not proof of either scoped or unscoped results. | Withholds results and returns `502 ScopeApplicationUnconfirmed`. |
-
-**Requiring explicit confirmation is a lab policy choice.** HTTP `200`, a nonempty result set, or sending a scope name alone does not satisfy it. The gateway injects both `scopeName` and `failOnMissingScope=true`; the latter asks Web IQ to return an error on a reported scope-application failure instead of falling back to unscoped search. The product guide documents HTTP `400 HandlerInvalidInput` for a confirmed missing scope and HTTP `500 ScopeFailedToApply` for other application failures. These upstream failures differ from the lab's `502 ScopeApplicationUnconfirmed`, which rejects an otherwise successful retrieval without acceptable confirmation. Callers cannot disable either safeguard, and the lab never retries without the scope.
-
-For MCP, the gateway requires the confirmation in the search result's `structuredContent.scopeApplied` or in a JSON text content block. If MCP does not expose that confirmation, results are withheld even if the upstream service may have applied a scope. Resolve scope publication, runtime profile selection, or MCP compatibility rather than adding scope parameters to the client request. The runtime profile must belong to the billing account that owns the scope.
-
-#### Implications for blocklist changes
-
-`scopeApplied: true` does **not** prove that the latest blocklist revision was used or that it reached every search partition or replica. The [Scopes reference — Search propagation](https://learn.microsoft.com/en-us/web-iq/reference/scopes#search-propagation) says propagation usually takes about 10 minutes and can take up to 30 minutes in some cases, with no guaranteed timing or propagation SLA. There is no readiness endpoint or scope versioning; neither the authoring ETag nor `scopeApplied` identifies the revision served. A successful publish, management read/write, or fixed wait is not a readiness check.
-
-After publishing, run representative allowed-source searches and the notebook's excluded-domain probes before relying on the new definition. A response can report `true` while still using an older definition that lacks a newly excluded domain. If serving the previous definition is unacceptable, the product guide recommends [rolling out a changed definition under a new name](https://learn.microsoft.com/en-us/web-iq/guides/create-scopes#roll-out-a-changed-definition). For this lab, publish and verify the new scope first, then update `name` in `scope-definition.json` and redeploy APIM. Retain the previous scope until no callers depend on it. This approach does not provide an atomic global switch.
-
-If extending the lab to Web IQ Auto, note the product limitation: scopes filter only Web and News results. Other Auto answer types can contain sources outside the scope even with `scopeApplied: true`; the guide recommends `responseFilter: ["web", "news"]` when only scoped evidence is acceptable. The current lab allows Web Search retrieval only.
-
 ### What you'll learn
 
 - Separate APIM consumer identification from Web IQ authentication.

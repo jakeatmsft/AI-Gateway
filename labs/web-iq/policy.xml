@@ -1,6 +1,37 @@
 <policies>
     <inbound>
         <base />
+        <!-- Scope selection belongs to the gateway, never the caller. Check all
+             JSON nesting (including MCP arguments) and query keys before forwarding. -->
+        <set-variable name="web-iq-caller-scope" value="@{
+            var reserved = new [] { &quot;scope&quot;, &quot;scopes&quot;, &quot;scopeName&quot;, &quot;scopeNames&quot;, &quot;failOnMissingScope&quot; };
+            foreach (var key in context.Request.Url.Query.Keys)
+            {
+                if (reserved.Any(name => string.Equals(name, key, System.StringComparison.OrdinalIgnoreCase))) return true;
+            }
+            if (context.Request.Body == null) return false;
+            try
+            {
+                var body = context.Request.Body.As&lt;JToken&gt;(preserveContent: true);
+                var container = body as JContainer;
+                if (container == null) return false;
+                foreach (var property in container.Descendants().OfType&lt;JProperty&gt;())
+                {
+                    if (reserved.Any(name => string.Equals(name, property.Name, System.StringComparison.OrdinalIgnoreCase))) return true;
+                }
+            }
+            catch { /* Malformed bodies are handled by the operation validation. */ }
+            return false;
+        }" />
+        <choose>
+            <when condition="@((bool)context.Variables[&quot;web-iq-caller-scope&quot;])">
+                <return-response>
+                    <set-status code="400" reason="Bad Request" />
+                    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+                    <set-body>{"errorCode":"CallerScopeNotAllowed","userMessage":"Scope parameters are managed by the gateway. Remove scope parameters from the request body and query string."}</set-body>
+                </return-response>
+            </when>
+        </choose>
         <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
         <set-query-parameter name="subscription-key" exists-action="delete" />
         <set-variable name="web-iq-auth-mode" value="@{
@@ -120,6 +151,46 @@
                 </return-response>
             </when>
         </choose>
+        <!-- Only Web Search supports the lab's enforced named scope. -->
+        <choose>
+            <when condition="@(context.Operation.Id == &quot;mcp-post&quot;)">
+                <set-variable name="web-iq-mcp-allowed" value="@{
+                    try
+                    {
+                        var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                        var method = (string)body[&quot;method&quot;];
+                        if (method == &quot;tools/call&quot;)
+                        {
+                            return (string)body.SelectToken(&quot;params.name&quot;) == &quot;web&quot;
+                                &amp;&amp; body.SelectToken(&quot;params.arguments&quot;) is JObject;
+                        }
+                        return method == &quot;initialize&quot; || method == &quot;notifications/initialized&quot;
+                            || method == &quot;ping&quot; || method == &quot;tools/list&quot;
+                    }
+                    catch { return false; }
+                }" />
+                <choose>
+                    <when condition="@(!(bool)context.Variables[&quot;web-iq-mcp-allowed&quot;])">
+                        <return-response>
+                            <set-status code="403" reason="Forbidden" />
+                            <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+                            <set-body>{"errorCode":"ScopedOperationRequired","userMessage":"Only scoped web tool calls and MCP session/discovery messages are allowed."}</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+            </when>
+        </choose>
+        <choose>
+            <when condition="@(context.Operation.Id == &quot;search-web&quot; || (string)context.Variables[&quot;web-iq-mcp-tool&quot;] == &quot;web&quot;)">
+                <set-body>@{
+                    var body = context.Request.Body.As&lt;JObject&gt;();
+                    var arguments = context.Operation.Id == "search-web" ? body : (JObject)body["params"]["arguments"];
+                    arguments["scopeName"] = "{web-iq-scope-name}";
+                    arguments["failOnMissingScope"] = true;
+                    return body.ToString(Newtonsoft.Json.Formatting.None);
+                }</set-body>
+            </when>
+        </choose>
         <set-header name="Accept-Encoding" exists-action="override">
             <value>identity</value>
         </set-header>
@@ -130,6 +201,68 @@
     </backend>
     <outbound>
         <base />
+        <!-- Never release a successful retrieval without explicit scope confirmation.
+             MCP may return JSON or SSE, with search JSON in a text content block. -->
+        <choose>
+            <when condition="@((context.Operation.Id == &quot;search-web&quot; || (string)context.Variables[&quot;web-iq-mcp-tool&quot;] == &quot;web&quot;) &amp;&amp; context.Response.StatusCode &gt;= 200 &amp;&amp; context.Response.StatusCode &lt; 300)">
+                <set-variable name="web-iq-scope-confirmed" value="@{
+                    try
+                    {
+                        var raw = context.Response.Body.As&lt;string&gt;(preserveContent: true);
+                        if (context.Operation.Id == &quot;search-web&quot;)
+                        {
+                            return (bool?)JObject.Parse(raw)[&quot;scopeApplied&quot;] == true;
+                        }
+                        var messages = new JArray();
+                        if (context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).Contains(&quot;text/event-stream&quot;))
+                        {
+                            foreach (var line in raw.Split('\n'))
+                            {
+                                if (line.StartsWith(&quot;data:&quot;)) messages.Add(JObject.Parse(line.Substring(5).Trim()));
+                            }
+                        }
+                        else { messages.Add(JObject.Parse(raw)); }
+                        var confirmed = false;
+                        foreach (var message in messages)
+                        {
+                            var result = message[&quot;result&quot;] as JObject;
+                            if (result == null) continue;
+                            if ((bool?)result[&quot;isError&quot;] == true) return false;
+                            var search = result[&quot;structuredContent&quot;] as JObject;
+                            if (search != null &amp;&amp; search[&quot;scopeApplied&quot;] != null)
+                            {
+                                if ((bool?)search[&quot;scopeApplied&quot;] != true) return false;
+                                confirmed = true;
+                            }
+                            var content = result[&quot;content&quot;] as JArray;
+                            if (content == null) continue;
+                            foreach (var item in content)
+                            {
+                                if ((string)item[&quot;type&quot;] != &quot;text&quot;) continue;
+                                JObject textResult;
+                                try { textResult = JObject.Parse((string)item[&quot;text&quot;]); }
+                                catch { continue; }
+                                if (textResult[&quot;scopeApplied&quot;] == null) continue;
+                                if ((bool?)textResult[&quot;scopeApplied&quot;] != true) return false;
+                                confirmed = true;
+                            }
+                        }
+                        return confirmed;
+                    }
+                    catch { return false; }
+                }" />
+                <choose>
+                    <when condition="@(!(bool)context.Variables[&quot;web-iq-scope-confirmed&quot;])">
+                        <return-response>
+                            <set-status code="502" reason="Bad Gateway" />
+                            <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+                            <set-header name="Content-Encoding" exists-action="delete" />
+                            <set-body>{"errorCode":"ScopeApplicationUnconfirmed","userMessage":"Web IQ did not confirm the required scope. Search results were withheld."}</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+            </when>
+        </choose>
         <include-fragment fragment-id="web-iq-content-safety" />
         <emit-metric name="Web IQ Responses" value="1" namespace="web-iq">
             <dimension name="Subscription ID" />

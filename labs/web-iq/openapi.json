@@ -9,7 +9,7 @@
     "/search/web": {
       "post": {
         "summary": "Search the web",
-        "description": "Returns ranked, citation-ready web results.",
+        "description": "Returns ranked, citation-ready web results. APIM injects the required named scope. Caller-supplied scope parameters in the body or query string are rejected with HTTP 400.",
         "operationId": "search-web",
         "requestBody": {
           "required": true,
@@ -137,6 +137,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "CallerScopeNotAllowed: scope parameters belong to the gateway and must be omitted."
           }
         }
       }

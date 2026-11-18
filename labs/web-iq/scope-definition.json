@@ -1,0 +1,13 @@
+{
+  "name": "WebIqLabBlockedDomains",
+  "includeSites": [],
+  "excludeSites": [
+    "youtube.com",
+    "tiktok.com",
+    "facebook.com",
+    "x.ai",
+    "spotify.com",
+    "pinterest.com",
+    "netflix.com"
+  ]
+}

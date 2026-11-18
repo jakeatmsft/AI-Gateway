@@ -28,6 +28,8 @@ param contentSafetyLocation string = resourceGroup().location
 //    VARIABLES
 // ------------------
 
+var webIqScopeName = loadJsonContent('scope-definition.json').name
+
 var resourceSuffix = uniqueString(subscription().id, resourceGroup().id)
 var apiManagementName = 'apim-${resourceSuffix}'
 var appInsightsLoggerId = resourceId('Microsoft.ApiManagement/service/loggers', apiManagementName, 'appinsights-logger')
@@ -158,7 +160,7 @@ resource webIqApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-06-0
   parent: webIqApi
   properties: {
     format: 'rawxml'
-    value: replace(loadTextContent('policy.xml'), '{web-iq-auth-mode}', webIqAuthMode)
+    value: replace(replace(loadTextContent('policy.xml'), '{web-iq-auth-mode}', webIqAuthMode), '{web-iq-scope-name}', webIqScopeName)
   }
   dependsOn: [
     webIqBackend
@@ -207,4 +209,5 @@ output apimResourceGatewayURL string = apimModule.outputs.gatewayUrl
 output apimSubscriptions array = apimModule.outputs.apimSubscriptions
 output webIqApiPath string = webIqApiPath
 output webIqAuthMode string = webIqAuthMode
+output webIqScopeName string = webIqScopeName
 output contentSafetyEndpoint string = contentSafetyResource.properties.endpoint
